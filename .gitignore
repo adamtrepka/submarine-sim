@@ -36,4 +36,6 @@ Desktop.ini
 
 # Misc
 nul
-*.png
+
+# Test images (not assets/)
+/test_*.png

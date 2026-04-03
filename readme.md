@@ -15,6 +15,10 @@ python python/gui.py
 
 Wymagania: Python 3.10+, `matplotlib` z backendem Qt5 (tylko dla GUI).
 
+### GUI
+
+![Submarine PID Depth Control — GUI](assets/gui.png)
+
 ## Cel projektu
 
 Symulacja sterowania głębokością modelu łodzi podwodnej za pomocą regulatora PID z realistycznymi modelami fizyki, czujników i aktuatora (Piston Ballast System). Projekt powstał iteracyjnie w kilku sesjach, ewoluując od prostego demo termicznego do pełnej symulacji z realistycznymi sensorami.

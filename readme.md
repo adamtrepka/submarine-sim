@@ -1,5 +1,20 @@
 # Submarine PID Depth Control — Podsumowanie projektu
 
+## Uruchomienie
+
+```bash
+# Symulacja konsolowa (60s, wyniki w tabeli)
+python python/main.py
+
+# Z wyborem akcelerometru, trybu i parametrów
+python python/main.py --accel adxl355 --mode pressure --target 0.15 --time 30
+
+# Interaktywne GUI (wykresy real-time, suwak głębokości, przełączniki sensorów)
+python python/gui.py
+```
+
+Wymagania: Python 3.10+, `matplotlib` z backendem Qt5 (tylko dla GUI).
+
 ## Cel projektu
 
 Symulacja sterowania głębokością modelu łodzi podwodnej za pomocą regulatora PID z realistycznymi modelami fizyki, czujników i aktuatora (Piston Ballast System). Projekt powstał iteracyjnie w kilku sesjach, ewoluując od prostego demo termicznego do pełnej symulacji z realistycznymi sensorami.
@@ -187,13 +202,15 @@ Po uruchomieniu GUI widoczne ciągłe oscylacje PBS. Przyczyna: szum prędkości
 
 **Estymacja prędkości:**
 ```
-  MPU6050 (200Hz) ──► kalibracja biasu ──► całkowanie ──┐
-                                                         ├──► Complementary
-  MS5837 (50Hz)  ──► różniczkowanie głębokości ──────────┘     Filter (τ=0.5s)
-                                                                    │
-                                                                    ▼
-                                                           estimated_velocity
-                                                           (input do członu D)
+  MPU6050/ADXL355 (200Hz) ──► kalibracja biasu ──► całkowanie ──┐
+                                                                  ├──► Complementary
+  MS5837 (50Hz)  ──► różniczkowanie głębokości ──────────────────┘     Filter (τ=0.5s)
+                                                                            │
+                                                                            ▼
+                                                                   estimated_velocity
+                                                                   (input do członu D)
+
+  Tryby: "both" (filtr komplementarny) | "pressure" (tylko MS5837) | "accel" (tylko akcel.)
 ```
 
 ---
@@ -215,6 +232,8 @@ Po uruchomieniu GUI widoczne ciągłe oscylacje PBS. Przyczyna: szum prędkości
 7. **Filtr komplementarny działa dobrze** po kalibracji — estymowana prędkość śledzi rzeczywistą w granicach ~1-2 mm/s
 
 8. **Bias czujnika ciśnienia** (±20mm) powoduje stały offset regulacji od prawdziwego celu — w produkcji wymaga kalibracji na starcie
+
+9. **Zmiana akcelerometru MPU6050→ADXL355 nie wpływa na wynik w trybie `both`** (31.1 vs 31.4mm overshoot). Filtr komplementarny skutecznie maskuje różnice jakości sensorów. Różnica ujawnia się dopiero w trybie `accel`-only, gdzie MPU6050 dryfuje katastrofalnie (vEst=76 mm/s po 60s), a ADXL355 utrzymuje się w granicach (~4.7 mm/s dryfu)
 
 ---
 
@@ -256,11 +275,29 @@ C:\Dev\demo\
 │   └── Demo.sln            # Solution file
 │
 ├── python/                 # Port na Python + GUI
-│   ├── main.py             # ~557 linii — symulacja + klasa SubmarineSim
-│   └── gui.py              # ~264 linii — wizualizacja matplotlib (Qt5Agg)
+│   ├── main.py             # ~727 linii — symulacja + klasa SubmarineSim + CLI
+│   └── gui.py              # ~354 linii — wizualizacja matplotlib (Qt5Agg)
 │
 └── readme.md               # Ten plik
 ```
+
+### Interfejs wiersza poleceń (`main.py`)
+
+```bash
+python main.py                                    # domyślne: mpu6050, both, 0.5m, 60s
+python main.py --accel adxl355                     # ADXL355, tryb both
+python main.py --mode pressure                     # MPU6050, tylko ciśnienie
+python main.py --accel adxl355 --mode accel         # ADXL355, tylko akcelerometr
+python main.py --target 0.15 --time 30             # krótszy dystans, 30s
+python main.py -h                                  # pomoc
+```
+
+| Argument | Wartości | Domyślna | Opis |
+|----------|----------|----------|------|
+| `--accel` | `mpu6050`, `adxl355` | `mpu6050` | Model akcelerometru |
+| `--mode` | `both`, `pressure`, `accel` | `both` | Tryb fuzji prędkości |
+| `--target` | float | `0.5` | Docelowa głębokość (m) |
+| `--time` | float | `60` | Czas symulacji (s) |
 
 ## Historia commitów
 
@@ -270,6 +307,8 @@ C:\Dev\demo\
 | `c489536` | `feat: add Python port of submarine PID depth control simulation` |
 | `e8e5a48` | `feat: add interactive GUI with depth/PBS charts and target depth slider` |
 | `f4ba7d5` | `fix: suppress PBS oscillations with 10mm dead band and add settle-time indicator` |
+| `f5476e5` | `feat: add sensor mode selection (pressure, accelerometer, or both)` |
+| `cb4519c` | `feat: add CLI arguments for sensor mode, accelerometer model, target depth and sim time` |
 
 ---
 
@@ -301,19 +340,42 @@ C:\Dev\demo\
 | Feedforward | PBS_neutral ≈ 19 ml |
 
 ### Czujniki
-| Parametr | MS5837-30BA (głębokość) | MPU6050 (akcelerometr) |
-|----------|-------------------------|------------------------|
-| Rozdzielczość | 0.016 mbar (≈0.16mm) | 0.061 mg (≈0.0006 m/s²) |
-| Szum RMS | 0.016 mbar (≈0.16mm) | ~1.0 mg (≈0.01 m/s²) |
-| Sample rate | 50 Hz | 200 Hz |
-| Bias (losowy, startup) | ±2 mbar (±20mm) | ±50 mg |
-| Kalibracja biasu | Brak (w produkcji: tak) | 0.5s uśrednianie na starcie |
+| Parametr | MS5837-30BA (głębokość) | MPU6050 (akcelerometr) | ADXL355 (akcelerometr) |
+|----------|-------------------------|------------------------|------------------------|
+| Rozdzielczość | 0.016 mbar (≈0.16mm) | 0.061 mg (≈0.0006 m/s²) | 3.9 µg (≈0.0000383 m/s²) |
+| Szum RMS | 0.016 mbar (≈0.16mm) | ~1.0 mg (≈0.01 m/s²) | ~0.064 mg (≈0.000625 m/s²) |
+| Sample rate | 50 Hz | 200 Hz | 200 Hz |
+| Bias (losowy, startup) | ±2 mbar (±20mm) | ±50 mg | ±10 mg |
+| Kalibracja biasu | Brak (w produkcji: tak) | 0.5s uśrednianie na starcie | 0.5s uśrednianie na starcie |
 
-### Wynik regulacji
-| Cel | Overshoot | Settle time (±10mm) |
-|-----|-----------|---------------------|
-| 0.5m (475mm travel) | 16.5 mm | ~15s |
-| 0.15m (125mm travel) | 0 mm | ~8s |
+### Wynik regulacji (tryb `both`, akcelerometr MPU6050)
+| Cel | Overshoot | Max depth | Final (60s) |
+|-----|-----------|-----------|-------------|
+| 0.5m (475mm travel) | 31.1 mm | 0.5311m | 0.5203m |
+| 0.15m (125mm travel) | ~0 mm | ~0.15m | ~0.15m |
+
+### Porównanie trybów i akcelerometrów (cel 0.5m, 60s symulacji)
+
+| Akcelerometr | Tryb | Overshoot | Max depth | Final (60s) | PBS (60s) | Uwagi |
+|--------------|------|-----------|-----------|-------------|-----------|-------|
+| MPU6050 | `both` | 31.1 mm | 0.5311m | 0.5203m | 19.05 ml | Stabilny |
+| MPU6050 | `pressure` | 34.4 mm | 0.5344m | 0.5081m | 19.15 ml | Oscylacje vEst (kwantyzacja) |
+| MPU6050 | `accel` | 0.0 mm | 0.3497m | **0.0857m** | 18.99 ml | **Katastrofa** — dryf biasu |
+| ADXL355 | `both` | 31.4 mm | 0.5314m | 0.5199m | 19.05 ml | Stabilny, ~identyczny z MPU6050 |
+| ADXL355 | `pressure` | 34.4 mm | 0.5344m | 0.5081m | 19.15 ml | Identyczny z MPU6050 (accel nieużywany) |
+| ADXL355 | `accel` | 30.1 mm | 0.5301m | 0.4862m | 19.05 ml | Działa, ale wolny dryf (~4.7 mm/s) |
+
+**Wnioski z porównania:**
+
+1. **Tryb `both` (filtr komplementarny):** Zmiana akcelerometru MPU6050→ADXL355 nie daje zauważalnej różnicy (31.1 vs 31.4 mm overshoot). Czujnik ciśnienia dominuje estymację prędkości długoterminowo.
+
+2. **Tryb `pressure`:** Identyczne wyniki niezależnie od akcelerometru — akcelerometr nie jest używany do estymacji prędkości. Gorszy niż `both` z powodu kwantyzacji prędkości z różniczkowania głębokości (skoki vEst ±8-32 mm/s).
+
+3. **Tryb `accel`:** Tu wybór akcelerometru jest **krytyczny**:
+   - **MPU6050:** Rezydualny bias po kalibracji (~1.36 mm/s²) jest całkowany bez korekcji, generując fikcyjną prędkość narastającą do ~76 mm/s po 60s. Łódź nigdy nie osiąga celu i dryfuje z powrotem na powierzchnię.
+   - **ADXL355:** 16× niższy szum i 5× mniejszy bias pozwalają na działanie, ale dryf jest widoczny (~4.7 mm/s po 60s) i łódź powoli odpływa od celu.
+
+4. **Tryb `pressure` identyczny dla obu sensorów** — potwierdza, że współdzielony RNG (`GaussianRng(42)`) generuje identyczne sekwencje szumu czujnika ciśnienia niezależnie od modelu akcelerometru (ten sam sample rate = te same punkty konsumpcji RNG).
 
 ---
 

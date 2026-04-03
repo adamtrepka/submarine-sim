@@ -155,9 +155,30 @@ def build_gui() -> None:
         fontfamily="monospace",
     )
 
+    # --- Settle-time tracking ---
+    _TOLERANCE_M = 0.010  # ±10 mm
+
+    class _SettleState:
+        """Mutable state for settle-time measurement."""
+        t_change: float = 0.0        # sim time of last slider change
+        settled: bool = False         # True once depth entered tolerance band
+        settle_time: float | None = None  # seconds from change to settled
+
+    _settle = _SettleState()
+
+    settle_text = ax_depth.text(
+        0.99, 0.02, "", transform=ax_depth.transAxes,
+        fontsize=9, color="#a6e3a1", verticalalignment="bottom",
+        horizontalalignment="right", fontfamily="monospace",
+        fontweight="bold",
+    )
+
     # --- Slider callback ---
     def on_slider_change(val: float) -> None:
         runner.sim.target_depth = val
+        _settle.t_change = runner.sim.time
+        _settle.settled = False
+        _settle.settle_time = None
 
     slider.on_changed(on_slider_change)
 
@@ -167,7 +188,7 @@ def build_gui() -> None:
 
         t = list(runner.t_buf)
         if len(t) < 2:
-            return ln_true, ln_meas, ln_target, ln_pbs, ln_neutral, status_text
+            return ln_true, ln_meas, ln_target, ln_pbs, ln_neutral, status_text, settle_text
 
         t_min = max(0.0, t[-1] - WINDOW_SEC)
         t_max = t[-1] + 1.0
@@ -210,7 +231,23 @@ def build_gui() -> None:
             f"v={runner.sim.velocity * 1000:.1f}mm/s"
         )
 
-        return ln_true, ln_meas, ln_target, ln_pbs, ln_neutral, status_text
+        # Settle-time detection
+        depth_error = abs(runner.sim.depth - runner.sim.target_depth)
+        if not _settle.settled and depth_error <= _TOLERANCE_M:
+            _settle.settled = True
+            _settle.settle_time = runner.sim.time - _settle.t_change
+
+        if _settle.settle_time is not None:
+            settle_text.set_text(f"Settle: {_settle.settle_time:.1f}s")
+            settle_text.set_color("#a6e3a1")  # green
+        elif _settle.t_change > 0:
+            elapsed = runner.sim.time - _settle.t_change
+            settle_text.set_text(f"Settling... {elapsed:.1f}s")
+            settle_text.set_color("#f9e2af")  # yellow
+        else:
+            settle_text.set_text("")
+
+        return ln_true, ln_meas, ln_target, ln_pbs, ln_neutral, status_text, settle_text
 
     _anim = FuncAnimation(  # noqa: F841  prevent GC
         fig,

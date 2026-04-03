@@ -182,21 +182,25 @@ class PidController:
         """
         error = self.set_point - process_value
 
-        # Dead band on P and I only (not D -- need full velocity signal)
-        error_for_pi = 0.0 if abs(error) <= self.dead_band else error
+        # Dead band: suppress ALL terms and drain integral when within tolerance
+        if abs(error) <= self.dead_band:
+            # Exponentially decay integral toward zero to prevent accumulated
+            # bias from pushing PBS once the submarine is within tolerance.
+            self._integral *= 0.99
+            return 0.0
 
-        p_term = self.kp * error_for_pi
+        p_term = self.kp * error
 
         # D term: negative velocity * Kd (derivative on measurement)
         d_term = -self.kd * velocity
 
         # Anti-windup: only integrate when output is not saturated,
         # or when error would reduce the integral (back-off)
-        candidate_integral = self._integral + error_for_pi * dt
+        candidate_integral = self._integral + error * dt
         candidate_output = p_term + self.ki * candidate_integral + d_term
         if self.output_min <= candidate_output <= self.output_max:
             self._integral = candidate_integral  # within bounds
-        elif error_for_pi * self._integral < 0:
+        elif error * self._integral < 0:
             self._integral = candidate_integral  # error opposes integral -> unwind
         # else: saturated and error would make it worse -> freeze integral
 
@@ -347,7 +351,7 @@ class SubmarineSim:
         kp: float = 10.0,
         ki: float = 0.1,
         kd: float = 80.0,
-        dead_band: float = 0.001,
+        dead_band: float = 0.010,
     ) -> None:
         self.dt = dt
         self.max_pump_rate = max_pump_rate

@@ -9,6 +9,7 @@ Velocity estimation: complementary filter fusing accelerometer integration
                      (short-term) with depth-sensor differentiation (long-term)
 """
 
+import argparse
 import math
 import random
 
@@ -151,6 +152,74 @@ class MPU6050Accel:
     @property
     def noise_sigma(self) -> float:
         return self._noise_sigma_mps2
+
+
+# --- ADXL355 Accelerometer Model (+-2g range, vertical axis only) ---
+
+class ADXL355Accel:
+    """
+    Datasheet specs (+-2g, digital LPF comparable to MPU6050 BW~5Hz config):
+      Sensitivity:   256000 LSB/g  (20-bit output)
+      Resolution:    3.9 ug/LSB -> 0.0000383 m/s2
+      Noise density: 25 ug/sqrt(Hz), effective BW ~6.5 Hz -> sigma ~ 0.064 mg ~ 0.000625 m/s2
+      Zero-g bias:   +-10 mg (typ)
+      Sample rate:   200 Hz (ODR configurable, matched to simulation)
+      Offset tempco: 0.15 mg/C (max)
+    """
+
+    _G_MPS2 = 9.80665
+    _SENSITIVITY = 256000.0          # 20-bit at +-2g
+    _LSB_MPS2 = _G_MPS2 / _SENSITIVITY   # ~ 0.0000383 m/s2
+
+    _NOISE_DENSITY = 25e-6               # g/sqrt(Hz)  -- 16x lower than MPU6050
+    _EFFECTIVE_NOISE_BW = 6.5            # Hz (comparable filter config)
+    _BIAS_MAX_MG = 10.0                  # +-10 mg (5x lower than MPU6050)
+
+    def __init__(self) -> None:
+        self.sample_period: float = 0.005  # 200 Hz
+
+        self._noise_sigma_mps2: float = (
+            self._NOISE_DENSITY * math.sqrt(self._EFFECTIVE_NOISE_BW) * self._G_MPS2
+        )
+        self._bias_mps2: float = (
+            self._BIAS_MAX_MG * (2.0 * random.Random(789).random() - 1.0)
+        ) * 1e-3 * self._G_MPS2
+        self._last_reading: float = 0.0
+        self._time_since_last_sample: float = self.sample_period
+
+    def read(self, true_accel_mps2: float, dt: float) -> float:
+        """
+        Returns measured net dynamic acceleration (m/s2, positive = down).
+        Gravity is NOT included -- caller provides net dynamic accel only.
+        """
+        self._time_since_last_sample += dt
+        if self._time_since_last_sample >= self.sample_period:
+            self._time_since_last_sample = 0.0
+            noisy = (
+                true_accel_mps2
+                + self._bias_mps2
+                + _gaussian_rng.next(0, self._noise_sigma_mps2)
+            )
+            self._last_reading = (
+                round(noisy / self._LSB_MPS2) * self._LSB_MPS2
+            )
+        return self._last_reading
+
+    @property
+    def bias_mps2(self) -> float:
+        return self._bias_mps2
+
+    @property
+    def noise_sigma(self) -> float:
+        return self._noise_sigma_mps2
+
+
+# --- Accelerometer model registry ---
+
+ACCEL_MODELS: dict[str, type] = {
+    "mpu6050": MPU6050Accel,
+    "adxl355": ADXL355Accel,
+}
 
 
 # --- PID Controller (full P + I + D) ---
@@ -400,9 +469,15 @@ class SubmarineSim:
         kd: float = 80.0,
         dead_band: float = 0.010,
         sensor_mode: str = "both",
+        accel_model: str = "mpu6050",
     ) -> None:
+        if accel_model not in ACCEL_MODELS:
+            raise ValueError(
+                f"accel_model must be one of {list(ACCEL_MODELS)}, got {accel_model!r}"
+            )
         self.dt = dt
         self.max_pump_rate = max_pump_rate
+        self._accel_model_name: str = accel_model
 
         # Neutral buoyancy
         self.neutral_pbs_ml = (RHO * math.pi * R * R * L - HULL_MASS) * 1e3
@@ -425,7 +500,7 @@ class SubmarineSim:
 
         # Sensors
         self._depth_sensor = MS5837Sensor()
-        self._accel_sensor = MPU6050Accel()
+        self._accel_sensor = ACCEL_MODELS[accel_model]()
 
         # Calibrator
         self._accel_calib = AccelCalibrator(calib_time_sec, self._accel_sensor.sample_period)
@@ -464,6 +539,10 @@ class SubmarineSim:
     @sensor_mode.setter
     def sensor_mode(self, value: str) -> None:
         self._vel_fusion.mode = value
+
+    @property
+    def accel_model(self) -> str:
+        return self._accel_model_name
 
     def step(self) -> None:
         """Advance simulation by one dt step."""
@@ -529,9 +608,43 @@ class SubmarineSim:
 
 
 def main() -> None:
-    sim = SubmarineSim(target_depth=0.5)
+    parser = argparse.ArgumentParser(
+        description="Submarine PID depth control simulation",
+    )
+    parser.add_argument(
+        "--accel",
+        choices=list(ACCEL_MODELS),
+        default="mpu6050",
+        help="accelerometer model (default: mpu6050)",
+    )
+    parser.add_argument(
+        "--mode",
+        choices=list(VelocityFusion.VALID_MODES),
+        default="both",
+        help="sensor fusion mode (default: both)",
+    )
+    parser.add_argument(
+        "--target",
+        type=float,
+        default=0.5,
+        help="target depth in meters (default: 0.5)",
+    )
+    parser.add_argument(
+        "--time",
+        type=float,
+        default=60.0,
+        dest="sim_time",
+        help="simulation duration in seconds (default: 60)",
+    )
+    args = parser.parse_args()
 
-    sim_time = 60.0
+    sim = SubmarineSim(
+        target_depth=args.target,
+        accel_model=args.accel,
+        sensor_mode=args.mode,
+    )
+
+    sim_time = args.sim_time
     steps = int(sim_time / sim.dt)
     print_every = int(1.0 / sim.dt)
 
@@ -553,11 +666,12 @@ def main() -> None:
         f"Rate: {1.0 / sim._depth_sensor.sample_period:.0f}Hz, "
         f"Bias: {sim._depth_sensor.bias_m * 1000:.2f}mm"
     )
-    print("Accel: MPU6050 (+-2g, DLPF 5Hz)")
+    print(f"Accel: {args.accel.upper()}")
     print(
         f"  True bias: {sim._accel_sensor.bias_mps2 * 1000:.2f}mm/s2, "
         f"Noise sigma: {sim._accel_sensor.noise_sigma * 1000:.2f}mm/s2"
     )
+    print(f"Sensor mode: {args.mode}")
     print(f"Pump: max {sim.max_pump_rate:.1f} ml/s")
     print(f"Target: {sim.target_depth:.3f}m")
     print()

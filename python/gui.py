@@ -16,9 +16,9 @@ matplotlib.use("Qt5Agg")
 
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from matplotlib.widgets import Slider, CheckButtons
+from matplotlib.widgets import Slider, CheckButtons, RadioButtons
 
-from main import SubmarineSim
+from main import SubmarineSim, ACCEL_MODELS
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -49,8 +49,12 @@ _BUF_LEN = int(WINDOW_SEC / (_DT * STEPS_PER_FRAME)) + 200  # generous headroom
 class SimRunner:
     """Thin wrapper that drives SubmarineSim and stores history."""
 
-    def __init__(self, target_depth: float = DEPTH_SLIDER_INIT) -> None:
-        self.sim = SubmarineSim(target_depth=target_depth)
+    def __init__(
+        self,
+        target_depth: float = DEPTH_SLIDER_INIT,
+        accel_model: str = "mpu6050",
+    ) -> None:
+        self.sim = SubmarineSim(target_depth=target_depth, accel_model=accel_model)
 
         # Ring buffers for plotting
         self.t_buf: deque[float] = deque(maxlen=_BUF_LEN)
@@ -64,6 +68,19 @@ class SimRunner:
     def advance(self, n_steps: int) -> None:
         for _ in range(n_steps):
             self.sim.step()
+        self._record()
+
+    def reset(self, target_depth: float, accel_model: str, sensor_mode: str) -> None:
+        """Recreate the simulation with new settings and clear history."""
+        self.sim = SubmarineSim(
+            target_depth=target_depth,
+            accel_model=accel_model,
+            sensor_mode=sensor_mode,
+        )
+        self.t_buf.clear()
+        self.depth_true.clear()
+        self.depth_meas.clear()
+        self.pbs_buf.clear()
         self._record()
 
     def _record(self) -> None:
@@ -84,11 +101,11 @@ def build_gui() -> None:
     fig = plt.figure("Submarine PID Depth Control", figsize=(12, 7))
     fig.patch.set_facecolor("#1e1e2e")
 
-    # GridSpec: 2 chart rows + 1 controls row (slider + checkboxes)
+    # GridSpec: 2 chart rows + 1 controls row (slider + checkboxes + accel model)
     gs = fig.add_gridspec(
-        3, 2,
+        3, 3,
         height_ratios=[3, 2, 0.6],
-        width_ratios=[3, 1],
+        width_ratios=[3, 1, 1],
         hspace=0.35,
         left=0.08, right=0.96,
         top=0.94, bottom=0.06,
@@ -98,6 +115,7 @@ def build_gui() -> None:
     ax_pbs = fig.add_subplot(gs[1, :], sharex=ax_depth)
     ax_slider = fig.add_subplot(gs[2, 0])
     ax_check = fig.add_subplot(gs[2, 1])
+    ax_accel = fig.add_subplot(gs[2, 2])
 
     # --- Styling helper ---
     _GRID_COLOR = "#3b3b54"
@@ -161,8 +179,9 @@ def build_gui() -> None:
         ax_check,
         _check_labels,
         actives=[True, True],
+        frame_props={"edgecolor": _TEXT_COLOR, "facecolor": _PANEL},
+        check_props={"facecolor": "#89b4fa", "s": 100, "linewidth": 2},
     )
-    # Style the checkbox labels and rectangles
     for label in check_buttons.labels:
         label.set_color(_TEXT_COLOR)
         label.set_fontsize(8)
@@ -187,6 +206,37 @@ def build_gui() -> None:
             runner.sim.sensor_mode = "accel"
 
     check_buttons.on_clicked(on_sensor_toggle)
+
+    # --- Accelerometer model radio buttons ---
+    ax_accel.set_facecolor(_PANEL)
+    ax_accel.set_title("Akcelerometr", fontsize=8, color=_TEXT_COLOR, pad=4)
+    for spine in ax_accel.spines.values():
+        spine.set_color(_GRID_COLOR)
+
+    _accel_labels = ["MPU6050", "ADXL355"]
+    radio_accel = RadioButtons(
+        ax_accel, _accel_labels, active=0, activecolor="#89b4fa",
+    )
+    for label in radio_accel.labels:
+        label.set_color(_TEXT_COLOR)
+        label.set_fontsize(8)
+    radio_accel.set_radio_props({"edgecolor": _TEXT_COLOR})
+    radio_accel.activecolor = "#89b4fa"
+
+    def on_accel_model(label: str | None) -> None:
+        if label is None:
+            return
+        model = label.lower()
+        runner.reset(
+            target_depth=runner.sim.target_depth,
+            accel_model=model,
+            sensor_mode=runner.sim.sensor_mode,
+        )
+        _settle.t_change = 0.0
+        _settle.settled = False
+        _settle.settle_time = None
+
+    radio_accel.on_clicked(on_accel_model)
 
     # --- Status text ---
     status_text = ax_depth.text(

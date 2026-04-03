@@ -328,50 +328,152 @@ def find_equilibrium(total_mass_kg: float) -> float:
     return (lo + hi) / 2.0
 
 
+class SubmarineSim:
+    """Encapsulates the full submarine depth-control simulation state.
+
+    Usage:
+        sim = SubmarineSim(target_depth=0.5)
+        for _ in range(N):
+            sim.step()    # advances by sim.dt seconds
+    """
+
+    def __init__(
+        self,
+        target_depth: float = 0.5,
+        dt: float = 0.001,
+        calib_time_sec: float = 0.5,
+        fusion_tau: float = 0.5,
+        max_pump_rate: float = 1.5,
+        kp: float = 10.0,
+        ki: float = 0.1,
+        kd: float = 80.0,
+        dead_band: float = 0.001,
+    ) -> None:
+        self.dt = dt
+        self.max_pump_rate = max_pump_rate
+
+        # Neutral buoyancy
+        self.neutral_pbs_ml = (RHO * math.pi * R * R * L - HULL_MASS) * 1e3
+
+        # Initial conditions — slightly negatively buoyant
+        init_pbs_ml = self.neutral_pbs_ml - 1.0
+        init_mass = HULL_MASS + init_pbs_ml * 1e-3
+        d0 = find_equilibrium(init_mass)
+
+        # State
+        self.time: float = 0.0
+        self.depth: float = d0
+        self.velocity: float = 0.0
+        self.pbs_ml: float = init_pbs_ml
+        self.max_depth: float = 0.0
+        self.measured_depth: float = 0.0
+        self.est_velocity: float = 0.0
+        self.accel: float = 0.0
+        self.calibrating: bool = True
+
+        # Sensors
+        self._depth_sensor = MS5837Sensor()
+        self._accel_sensor = MPU6050Accel()
+
+        # Calibrator
+        self._accel_calib = AccelCalibrator(calib_time_sec, self._accel_sensor.sample_period)
+
+        # Velocity fusion
+        self._vel_fusion = VelocityFusion(tau=fusion_tau)
+
+        # PID
+        self._pid = PidController(
+            kp=kp,
+            ki=ki,
+            kd=kd,
+            set_point=target_depth,
+            output_min=-self.neutral_pbs_ml,
+            output_max=PBS_MAX_ML - self.neutral_pbs_ml,
+            dead_band=dead_band,
+        )
+
+        # Internal bookkeeping
+        self._prev_raw_accel: float = float("nan")
+
+    # --- Public API ---
+
+    @property
+    def target_depth(self) -> float:
+        return self._pid.set_point
+
+    @target_depth.setter
+    def target_depth(self, value: float) -> None:
+        self._pid.set_point = value
+
+    def step(self) -> None:
+        """Advance simulation by one dt step."""
+        dt = self.dt
+
+        # --- Physics ---
+        total_mass = HULL_MASS + self.pbs_ml * 1e-3
+        weight = total_mass * G
+        buoyancy = RHO * G * submerged_volume(self.depth)
+        drag = 0.5 * RHO * CD * DRAG_AREA * self.velocity * abs(self.velocity)
+        self.accel = (weight - buoyancy - drag) / total_mass
+
+        # --- Sensor readings ---
+        self.measured_depth, new_depth_sample = self._depth_sensor.read(self.depth, dt)
+        raw_accel = self._accel_sensor.read(self.accel, dt)
+
+        new_accel_sample = raw_accel != self._prev_raw_accel
+        self._prev_raw_accel = raw_accel
+
+        # --- Calibration phase ---
+        if not self._accel_calib.is_done:
+            if new_accel_sample:
+                self._accel_calib.add_sample(raw_accel)
+
+            self.velocity += self.accel * dt
+            self.depth += self.velocity * dt
+            self._clamp()
+            self.calibrating = not self._accel_calib.is_done
+            self.time += dt
+            return
+
+        self.calibrating = False
+
+        # --- Calibrated accel + fusion ---
+        calibrated_accel = raw_accel - self._accel_calib.estimated_bias
+        self.est_velocity = self._vel_fusion.update(
+            calibrated_accel, self.measured_depth, new_depth_sample, dt,
+        )
+
+        # --- PID ---
+        correction = self._pid.update(self.measured_depth, self.est_velocity, dt)
+        target_pbs = max(0.0, min(PBS_MAX_ML, self.neutral_pbs_ml + correction))
+
+        max_change = self.max_pump_rate * dt
+        self.pbs_ml += max(-max_change, min(max_change, target_pbs - self.pbs_ml))
+        self.pbs_ml = max(0.0, min(PBS_MAX_ML, self.pbs_ml))
+
+        # --- Integrate ---
+        self.velocity += self.accel * dt
+        self.depth += self.velocity * dt
+        self._clamp()
+        self.time += dt
+
+    # --- Helpers ---
+
+    def _clamp(self) -> None:
+        if self.depth < -R:
+            self.depth = -R
+            if self.velocity < 0:
+                self.velocity = 0.0
+        if self.depth > self.max_depth:
+            self.max_depth = self.depth
+
+
 def main() -> None:
-    neutral_pbs_ml = (RHO * math.pi * R * R * L - HULL_MASS) * 1e3
+    sim = SubmarineSim(target_depth=0.5)
 
-    init_pbs_ml = neutral_pbs_ml - 1.0
-    init_mass = HULL_MASS + init_pbs_ml * 1e-3
-    d0 = find_equilibrium(init_mass)
-
-    # --- Sensors ---
-    depth_sensor = MS5837Sensor()
-    accel_sensor = MPU6050Accel()
-
-    # Accelerometer bias calibration: 0.5s at startup while stationary
-    calib_time_sec = 0.5
-    accel_calib = AccelCalibrator(calib_time_sec, accel_sensor.sample_period)
-
-    # Velocity fusion: tau = 0.5s complementary filter
-    fusion_tau = 0.5
-    vel_fusion = VelocityFusion(tau=fusion_tau)
-
-    max_pump_rate = 1.5
-
-    # --- PID ---
-    pid = PidController(
-        kp=10.0,
-        ki=0.1,
-        kd=80.0,
-        set_point=0.5,
-        output_min=-neutral_pbs_ml,
-        output_max=PBS_MAX_ML - neutral_pbs_ml,
-        dead_band=0.001,
-    )
-
-    dt = 0.001
     sim_time = 60.0
-    steps = int(sim_time / dt)
-    print_every = int(1.0 / dt)
-
-    depth = d0
-    vel = 0.0
-    pbs_ml = init_pbs_ml
-    max_depth = 0.0
-
-    # Track previous accel reading to detect new samples for calibration
-    prev_raw_accel = float("nan")
+    steps = int(sim_time / sim.dt)
+    print_every = int(1.0 / sim.dt)
 
     # --- Header ---
     print("=== Submarine PID Depth Control ===")
@@ -381,30 +483,28 @@ def main() -> None:
     )
     print(
         f"Volume: {math.pi * R * R * L * 1e6:.1f}ml, "
-        f"Neutral PBS: {neutral_pbs_ml:.1f}ml"
+        f"Neutral PBS: {sim.neutral_pbs_ml:.1f}ml"
     )
-    print(f"Init: PBS={init_pbs_ml:.1f}ml, depth={d0 * 1000:.1f}mm")
+    print(f"Init: PBS={sim.pbs_ml:.1f}ml, depth={sim.depth * 1000:.1f}mm")
     print()
     print("Depth sensor: MS5837-30BA (OSR 8192)")
     print(
-        f"  Resolution: {depth_sensor.depth_resolution_m * 1000:.3f}mm, "
-        f"Rate: {1.0 / depth_sensor.sample_period:.0f}Hz, "
-        f"Bias: {depth_sensor.bias_m * 1000:.2f}mm"
+        f"  Resolution: {sim._depth_sensor.depth_resolution_m * 1000:.3f}mm, "
+        f"Rate: {1.0 / sim._depth_sensor.sample_period:.0f}Hz, "
+        f"Bias: {sim._depth_sensor.bias_m * 1000:.2f}mm"
     )
     print("Accel: MPU6050 (+-2g, DLPF 5Hz)")
     print(
-        f"  True bias: {accel_sensor.bias_mps2 * 1000:.2f}mm/s2, "
-        f"Noise sigma: {accel_sensor.noise_sigma * 1000:.2f}mm/s2"
+        f"  True bias: {sim._accel_sensor.bias_mps2 * 1000:.2f}mm/s2, "
+        f"Noise sigma: {sim._accel_sensor.noise_sigma * 1000:.2f}mm/s2"
     )
-    print(f"  Calibration: {calib_time_sec:.1f}s at startup")
-    print(f"Pump: max {max_pump_rate:.1f} ml/s")
-    print("Target: 0.500m")
+    print(f"Pump: max {sim.max_pump_rate:.1f} ml/s")
+    print(f"Target: {sim.target_depth:.3f}m")
     print()
     print(
-        f"PID: Kp={pid.kp}, Ki={pid.ki}, Kd={pid.kd}, "
-        f"DeadBand={pid.dead_band * 1000:.1f}mm"
+        f"PID: Kp={sim._pid.kp}, Ki={sim._pid.ki}, Kd={sim._pid.kd}, "
+        f"DeadBand={sim._pid.dead_band * 1000:.1f}mm"
     )
-    print(f"Velocity fusion tau={fusion_tau:.1f}s")
     print()
     print(
         f"{'t(s)':>6} {'True(m)':>9} {'Sens(m)':>9} {'v(mm/s)':>9} "
@@ -412,91 +512,39 @@ def main() -> None:
     )
     print("-" * 80)
 
+    calib_msg_printed = False
+
     for i in range(steps + 1):
-        # --- Physics ---
-        total_mass = HULL_MASS + pbs_ml * 1e-3
-        weight = total_mass * G
-        buoyancy = RHO * G * submerged_volume(depth)
-        drag = 0.5 * RHO * CD * DRAG_AREA * vel * abs(vel)
-        accel = (weight - buoyancy - drag) / total_mass
-
-        # --- Sensor readings ---
-        measured_depth, new_depth_sample = depth_sensor.read(depth, dt)
-        raw_accel = accel_sensor.read(accel, dt)
-
-        # Detect new accelerometer sample (value changed = new conversion)
-        new_accel_sample = raw_accel != prev_raw_accel
-        prev_raw_accel = raw_accel
-
-        # --- Accelerometer bias calibration ---
-        if not accel_calib.is_done:
-            if new_accel_sample:
-                accel_calib.add_sample(raw_accel)
-
-            # During calibration: no PID, hold PBS constant, no velocity estimation
-            vel += accel * dt
-            depth += vel * dt
-            if depth < -R:
-                depth = -R
-                if vel < 0:
-                    vel = 0.0
-            if depth > max_depth:
-                max_depth = depth
-
-            if i % print_every == 0:
-                print(
-                    f"{i * dt:6.1f} {depth:9.4f} {measured_depth:9.4f} "
-                    f"{vel * 1000:9.2f} {'[CALIB]':>11} "
-                    f"{pbs_ml:8.2f} {pbs_ml:8.2f} {accel:9.5f}"
-                )
-
-            if accel_calib.is_done:
-                print(
-                    f"  >>> Accel calibration done: estimated bias = "
-                    f"{accel_calib.estimated_bias * 1000:.2f} mm/s2 "
-                    f"(true: {accel_sensor.bias_mps2 * 1000:.2f} mm/s2)"
-                )
-            continue
-
-        # --- Calibrated accelerometer ---
-        calibrated_accel = raw_accel - accel_calib.estimated_bias
-
-        # --- Velocity fusion ---
-        est_velocity = vel_fusion.update(
-            calibrated_accel, measured_depth, new_depth_sample, dt
-        )
-
-        # --- PID ---
-        correction = pid.update(measured_depth, est_velocity, dt)
-        target_pbs = max(0.0, min(PBS_MAX_ML, neutral_pbs_ml + correction))
-
-        max_change = max_pump_rate * dt
-        pbs_ml += max(-max_change, min(max_change, target_pbs - pbs_ml))
-        pbs_ml = max(0.0, min(PBS_MAX_ML, pbs_ml))
-
-        # --- Integrate ---
-        vel += accel * dt
-        depth += vel * dt
-        if depth < -R:
-            depth = -R
-            if vel < 0:
-                vel = 0.0
-        if depth > max_depth:
-            max_depth = depth
-
-        # --- Print ---
         if i % print_every == 0:
+            if sim.calibrating:
+                print(
+                    f"{sim.time:6.1f} {sim.depth:9.4f} {sim.measured_depth:9.4f} "
+                    f"{sim.velocity * 1000:9.2f} {'[CALIB]':>11} "
+                    f"{sim.pbs_ml:8.2f} {sim.pbs_ml:8.2f} {sim.accel:9.5f}"
+                )
+            else:
+                print(
+                    f"{sim.time:6.1f} {sim.depth:9.4f} {sim.measured_depth:9.4f} "
+                    f"{sim.velocity * 1000:9.2f} {sim.est_velocity * 1000:11.2f} "
+                    f"{sim.pbs_ml:8.2f} {sim.pbs_ml:8.2f} {sim.accel:9.5f}"
+                )
+
+        was_calibrating = sim.calibrating
+        sim.step()
+
+        if was_calibrating and not sim.calibrating and not calib_msg_printed:
             print(
-                f"{i * dt:6.1f} {depth:9.4f} {measured_depth:9.4f} "
-                f"{vel * 1000:9.2f} {est_velocity * 1000:11.2f} "
-                f"{pbs_ml:8.2f} {pbs_ml:8.2f} {accel:9.5f}"
+                f"  >>> Accel calibration done: estimated bias = "
+                f"{sim._accel_calib.estimated_bias * 1000:.2f} mm/s2 "
+                f"(true: {sim._accel_sensor.bias_mps2 * 1000:.2f} mm/s2)"
             )
+            calib_msg_printed = True
 
     print("-" * 80)
-    overshoot = (max_depth - 0.5) * 1000 if max_depth > 0.5 else 0.0
+    overshoot = (sim.max_depth - sim.target_depth) * 1000 if sim.max_depth > sim.target_depth else 0.0
     print(
-        f"Max depth: {max_depth:.4f}m | Final: {depth:.4f}m | "
-        f"PBS: {pbs_ml:.2f}ml ({pbs_ml:.2f}g) | "
+        f"Max depth: {sim.max_depth:.4f}m | Final: {sim.depth:.4f}m | "
+        f"PBS: {sim.pbs_ml:.2f}ml ({sim.pbs_ml:.2f}g) | "
         f"Overshoot: {overshoot:.1f}mm"
     )
 

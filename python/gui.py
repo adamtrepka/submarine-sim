@@ -16,7 +16,7 @@ matplotlib.use("Qt5Agg")
 
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from matplotlib.widgets import Slider
+from matplotlib.widgets import Slider, CheckButtons
 
 from main import SubmarineSim
 
@@ -84,18 +84,20 @@ def build_gui() -> None:
     fig = plt.figure("Submarine PID Depth Control", figsize=(12, 7))
     fig.patch.set_facecolor("#1e1e2e")
 
-    # GridSpec: 2 chart rows + 1 slider row
+    # GridSpec: 2 chart rows + 1 controls row (slider + checkboxes)
     gs = fig.add_gridspec(
-        3, 1,
-        height_ratios=[3, 2, 0.4],
+        3, 2,
+        height_ratios=[3, 2, 0.6],
+        width_ratios=[3, 1],
         hspace=0.35,
         left=0.08, right=0.96,
         top=0.94, bottom=0.06,
     )
 
-    ax_depth = fig.add_subplot(gs[0])
-    ax_pbs = fig.add_subplot(gs[1], sharex=ax_depth)
-    ax_slider = fig.add_subplot(gs[2])
+    ax_depth = fig.add_subplot(gs[0, :])
+    ax_pbs = fig.add_subplot(gs[1, :], sharex=ax_depth)
+    ax_slider = fig.add_subplot(gs[2, 0])
+    ax_check = fig.add_subplot(gs[2, 1])
 
     # --- Styling helper ---
     _GRID_COLOR = "#3b3b54"
@@ -147,6 +149,44 @@ def build_gui() -> None:
     )
     slider.label.set_color(_TEXT_COLOR)
     slider.valtext.set_color(_TEXT_COLOR)
+
+    # --- Sensor-mode checkboxes ---
+    ax_check.set_facecolor(_PANEL)
+    ax_check.set_title("Czujnik prędkości", fontsize=8, color=_TEXT_COLOR, pad=4)
+    for spine in ax_check.spines.values():
+        spine.set_color(_GRID_COLOR)
+
+    _check_labels = ["Ciśnienie", "Akcelerometr"]
+    check_buttons = CheckButtons(
+        ax_check,
+        _check_labels,
+        actives=[True, True],
+    )
+    # Style the checkbox labels and rectangles
+    for label in check_buttons.labels:
+        label.set_color(_TEXT_COLOR)
+        label.set_fontsize(8)
+
+    def on_sensor_toggle(label: str | None) -> None:
+        status = check_buttons.get_status()
+        pressure_on = status[0]
+        accel_on = status[1]
+
+        # Prevent unchecking both — re-check the one just toggled
+        if not pressure_on and not accel_on:
+            if label is not None:
+                idx = _check_labels.index(label)
+                check_buttons.set_active(idx)
+            return
+
+        if pressure_on and accel_on:
+            runner.sim.sensor_mode = "both"
+        elif pressure_on:
+            runner.sim.sensor_mode = "pressure"
+        else:
+            runner.sim.sensor_mode = "accel"
+
+    check_buttons.on_clicked(on_sensor_toggle)
 
     # --- Status text ---
     status_text = ax_depth.text(

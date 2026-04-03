@@ -254,14 +254,38 @@ class VelocityFusion:
     Predict:  v_fused += calibratedAccel * dt
     Correct:  on each depth sample, blend toward depth-derived velocity
               beta = dt_depth / (tau + dt_depth) where dt_depth = depth sample interval
+
+    Supports three modes:
+      "both"     – complementary filter (default, original behaviour)
+      "pressure" – velocity derived only from depth differentiation
+      "accel"    – velocity derived only from accelerometer integration
     """
 
-    def __init__(self, tau: float = 0.5) -> None:
+    VALID_MODES = ("both", "pressure", "accel")
+
+    def __init__(self, tau: float = 0.5, mode: str = "both") -> None:
+        if mode not in self.VALID_MODES:
+            raise ValueError(f"mode must be one of {self.VALID_MODES}, got {mode!r}")
         self._tau = tau
+        self._mode = mode
         self._fused_velocity: float = 0.0
         self._prev_depth: float = 0.0
         self._depth_age: float = 0.0
         self._first_depth: bool = True
+
+    # --- mode property ---
+
+    @property
+    def mode(self) -> str:
+        return self._mode
+
+    @mode.setter
+    def mode(self, value: str) -> None:
+        if value not in self.VALID_MODES:
+            raise ValueError(f"mode must be one of {self.VALID_MODES}, got {value!r}")
+        self._mode = value
+
+    # --- update ---
 
     def update(
         self,
@@ -270,6 +294,29 @@ class VelocityFusion:
         new_depth_sample: bool,
         dt: float,
     ) -> float:
+        mode = self._mode
+
+        if mode == "accel":
+            # Accelerometer-only: integrate accel, no depth correction
+            self._fused_velocity += calibrated_accel * dt
+            return self._fused_velocity
+
+        if mode == "pressure":
+            # Pressure-only: velocity from depth differentiation
+            self._depth_age += dt
+            if new_depth_sample:
+                if self._first_depth:
+                    self._prev_depth = depth
+                    self._first_depth = False
+                elif self._depth_age > 1e-9:
+                    self._fused_velocity = (
+                        (depth - self._prev_depth) / self._depth_age
+                    )
+                    self._prev_depth = depth
+                self._depth_age = 0.0
+            return self._fused_velocity
+
+        # mode == "both": complementary filter (original behaviour)
         # Predict: integrate calibrated accelerometer
         self._fused_velocity += calibrated_accel * dt
         self._depth_age += dt
@@ -352,6 +399,7 @@ class SubmarineSim:
         ki: float = 0.1,
         kd: float = 80.0,
         dead_band: float = 0.010,
+        sensor_mode: str = "both",
     ) -> None:
         self.dt = dt
         self.max_pump_rate = max_pump_rate
@@ -383,7 +431,7 @@ class SubmarineSim:
         self._accel_calib = AccelCalibrator(calib_time_sec, self._accel_sensor.sample_period)
 
         # Velocity fusion
-        self._vel_fusion = VelocityFusion(tau=fusion_tau)
+        self._vel_fusion = VelocityFusion(tau=fusion_tau, mode=sensor_mode)
 
         # PID
         self._pid = PidController(
@@ -408,6 +456,14 @@ class SubmarineSim:
     @target_depth.setter
     def target_depth(self, value: float) -> None:
         self._pid.set_point = value
+
+    @property
+    def sensor_mode(self) -> str:
+        return self._vel_fusion.mode
+
+    @sensor_mode.setter
+    def sensor_mode(self, value: str) -> None:
+        self._vel_fusion.mode = value
 
     def step(self) -> None:
         """Advance simulation by one dt step."""

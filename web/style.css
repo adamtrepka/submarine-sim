@@ -1,0 +1,53 @@
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0a0e1a;--panel:#101428;--border:#1e2a4a;--text:#cdd6f4;
+  --blue:#89b4fa;--orange:#fab387;--pink:#f38ba8;--green:#a6e3a1;
+  --muted:#6c7086;--yellow:#f9e2af;--accent:#cba6f7;
+}
+html,body{height:100%;overflow:hidden}
+body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;display:flex;flex-direction:column}
+
+#main-layout{display:flex;flex:1;min-height:0;overflow:hidden}
+#left-column{flex:0 0 60%;display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--border)}
+#right-column{flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+
+#game-container{flex:1;position:relative;overflow:hidden;min-height:0}
+#gameCanvas{display:block;width:100%;height:100%}
+
+/* HUD overlays */
+.hud{position:absolute;pointer-events:none;font-family:'Consolas','Courier New',monospace}
+#hud-metrics{top:10px;right:10px;background:rgba(10,14,26,0.82);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:12px;line-height:1.7;min-width:155px;backdrop-filter:blur(4px)}
+#hud-metrics .row{display:flex;justify-content:space-between;gap:8px}
+#hud-metrics .lbl{color:var(--muted);text-transform:uppercase;font-size:10px}
+#hud-metrics .val{font-weight:700;text-align:right}
+#hud-title{top:10px;left:50%;transform:translateX(-50%);text-align:center;font-size:15px;font-weight:700;color:rgba(200,215,255,0.7);text-shadow:0 0 12px rgba(100,150,255,0.3);letter-spacing:1px;white-space:nowrap;font-family:'Segoe UI',system-ui,sans-serif}
+#hud-hint{bottom:10px;left:50%;transform:translateX(-50%);font-size:11px;color:rgba(200,215,255,0.35);white-space:nowrap;font-family:'Segoe UI',system-ui,sans-serif}
+
+/* Controls panel */
+#controls{background:var(--panel);border-top:1px solid var(--border);display:flex;flex-wrap:wrap;align-items:stretch;gap:0;flex-shrink:0}
+.p-section{padding:8px 14px;border-right:1px solid var(--border);display:flex;flex-direction:column;justify-content:center}
+.p-section:last-child{border-right:none}
+.p-section h3{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px}
+.p-section label{display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;margin-bottom:1px}
+input[type=range]{width:120px;accent-color:var(--blue)}
+input[type=radio],input[type=checkbox]{accent-color:var(--blue);width:13px;height:13px}
+.val-display{font-size:13px;font-weight:700;color:var(--blue);text-align:center;margin:2px 0}
+.btn-row{display:flex;gap:4px;align-items:center}
+button{background:var(--border);color:var(--text);border:1px solid var(--muted);border-radius:5px;padding:4px 10px;cursor:pointer;font-size:12px;transition:background .15s}
+button:hover{background:var(--muted)}
+button.active{background:var(--blue);color:var(--bg);border-color:var(--blue)}
+
+/* Graph panels */
+.graph-panel{flex:1;display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.graph-panel:first-child{border-bottom:1px solid var(--border)}
+.graph-panel canvas{display:block;width:100%;flex:1;min-height:0}
+
+@media(max-width:800px){
+  #main-layout{flex-direction:column}
+  #left-column{flex:none;border-right:none;border-bottom:1px solid var(--border)}
+  #game-container{height:40vh}
+  #right-column{flex:none;height:40vh}
+  #controls{flex-direction:column}
+  .p-section{border-right:none;border-bottom:1px solid var(--border);padding:6px 10px}
+  input[type=range]{width:100%}
+}

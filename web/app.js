@@ -1,0 +1,1233 @@
+"use strict";
+
+// =========================================================================
+// Gaussian RNG (Box-Muller with xorshift32 seeded PRNG)
+// =========================================================================
+class SeededRng {
+  constructor(seed) { this._s = seed >>> 0; }
+  random() {
+    var s = this._s;
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
+    this._s = s >>> 0;
+    return (this._s + 0.5) / 4294967296;
+  }
+}
+
+class GaussianRng {
+  constructor(seed) { this._rng = new SeededRng(seed); this._hasSpare = false; this._spare = 0; }
+  next(mean, stdDev) {
+    if (this._hasSpare) { this._hasSpare = false; return mean + stdDev * this._spare; }
+    var u, v, s;
+    do { u = this._rng.random() * 2 - 1; v = this._rng.random() * 2 - 1; s = u * u + v * v; } while (s <= 0 || s >= 1);
+    s = Math.sqrt(-2 * Math.log(s) / s);
+    this._spare = v * s; this._hasSpare = true;
+    return mean + stdDev * u * s;
+  }
+}
+
+var _gaussianRng = new GaussianRng(42);
+
+// =========================================================================
+// MS5837-30BA Pressure / Depth Sensor
+// =========================================================================
+class MS5837Sensor {
+  constructor() {
+    this.samplePeriod = 0.020;
+    this.depthResolution = 0.016 / 98.1;
+    this._noiseSigma = 0.016 / 98.1;
+    this._bias = (2.0 * (2 * new SeededRng(123).random() - 1)) / 98.1;
+    this._lastReading = 0; this._timeSinceLast = this.samplePeriod; this._newSample = false;
+  }
+  get biasM() { return this._bias; }
+  read(trueDepth, dt) {
+    this._timeSinceLast += dt; this._newSample = false;
+    if (this._timeSinceLast >= this.samplePeriod) {
+      this._timeSinceLast = 0; this._newSample = true;
+      var noisy = trueDepth + this._bias + _gaussianRng.next(0, this._noiseSigma);
+      this._lastReading = Math.round(noisy / this.depthResolution) * this.depthResolution;
+    }
+    return [this._lastReading, this._newSample];
+  }
+}
+
+// =========================================================================
+// Accelerometer Models
+// =========================================================================
+var G_MPS2 = 9.80665;
+
+class MPU6050Accel {
+  constructor() {
+    this._lsbMps2 = G_MPS2 / 16384;
+    this._noiseSigma = 400e-6 * Math.sqrt(6.5) * G_MPS2;
+    this._bias = (50 * (2 * new SeededRng(456).random() - 1)) * 1e-3 * G_MPS2;
+    this.samplePeriod = 0.005; this._lastReading = 0; this._timeSinceLast = this.samplePeriod;
+  }
+  get biasMps2() { return this._bias; }
+  get noiseSigma() { return this._noiseSigma; }
+  read(trueAccel, dt) {
+    this._timeSinceLast += dt;
+    if (this._timeSinceLast >= this.samplePeriod) {
+      this._timeSinceLast = 0;
+      var noisy = trueAccel + this._bias + _gaussianRng.next(0, this._noiseSigma);
+      this._lastReading = Math.round(noisy / this._lsbMps2) * this._lsbMps2;
+    }
+    return this._lastReading;
+  }
+}
+
+class ADXL355Accel {
+  constructor() {
+    this._lsbMps2 = G_MPS2 / 256000;
+    this._noiseSigma = 25e-6 * Math.sqrt(6.5) * G_MPS2;
+    this._bias = (10 * (2 * new SeededRng(789).random() - 1)) * 1e-3 * G_MPS2;
+    this.samplePeriod = 0.005; this._lastReading = 0; this._timeSinceLast = this.samplePeriod;
+  }
+  get biasMps2() { return this._bias; }
+  get noiseSigma() { return this._noiseSigma; }
+  read(trueAccel, dt) {
+    this._timeSinceLast += dt;
+    if (this._timeSinceLast >= this.samplePeriod) {
+      this._timeSinceLast = 0;
+      var noisy = trueAccel + this._bias + _gaussianRng.next(0, this._noiseSigma);
+      this._lastReading = Math.round(noisy / this._lsbMps2) * this._lsbMps2;
+    }
+    return this._lastReading;
+  }
+}
+
+var ACCEL_MODELS = { mpu6050: MPU6050Accel, adxl355: ADXL355Accel };
+
+// =========================================================================
+// PID Controller
+// =========================================================================
+class PidController {
+  constructor(kp, ki, kd, setPoint, outMin, outMax, deadBand) {
+    this.kp = kp; this.ki = ki; this.kd = kd;
+    this.setPoint = setPoint;
+    this.outMin = outMin !== undefined ? outMin : -Infinity;
+    this.outMax = outMax !== undefined ? outMax : Infinity;
+    this.deadBand = deadBand || 0;
+    this._integral = 0;
+  }
+  update(pv, velocity, dt) {
+    var error = this.setPoint - pv;
+    if (Math.abs(error) <= this.deadBand) { this._integral *= 0.99; return 0; }
+    var pTerm = this.kp * error;
+    var dTerm = -this.kd * velocity;
+    var candidateI = this._integral + error * dt;
+    var candidateOut = pTerm + this.ki * candidateI + dTerm;
+    if (candidateOut >= this.outMin && candidateOut <= this.outMax) this._integral = candidateI;
+    else if (error * this._integral < 0) this._integral = candidateI;
+    return Math.max(this.outMin, Math.min(this.outMax, pTerm + this.ki * this._integral + dTerm));
+  }
+  reset() { this._integral = 0; }
+}
+
+// =========================================================================
+// Accelerometer Bias Calibrator
+// =========================================================================
+class AccelCalibrator {
+  constructor(calibTimeSec, samplePeriod) {
+    this._required = Math.max(1, Math.floor(calibTimeSec / samplePeriod));
+    this._sum = 0; this._count = 0; this._estimatedBias = 0; this._done = false;
+  }
+  addSample(raw) {
+    if (this._done) return true;
+    this._sum += raw; this._count++;
+    if (this._count >= this._required) { this._estimatedBias = this._sum / this._count; this._done = true; }
+    return this._done;
+  }
+  get estimatedBias() { return this._estimatedBias; }
+  get isDone() { return this._done; }
+}
+
+// =========================================================================
+// Complementary Filter Velocity Estimator
+// =========================================================================
+class VelocityFusion {
+  constructor(tau, mode) {
+    this._tau = tau || 0.5; this.mode = mode || "both";
+    this._fusedVelocity = 0; this._prevDepth = 0; this._depthAge = 0; this._firstDepth = true;
+  }
+  update(calibAccel, depth, newDepthSample, dt) {
+    var mode = this.mode;
+    if (mode === "accel") { this._fusedVelocity += calibAccel * dt; return this._fusedVelocity; }
+    if (mode === "pressure") {
+      this._depthAge += dt;
+      if (newDepthSample) {
+        if (this._firstDepth) { this._prevDepth = depth; this._firstDepth = false; }
+        else if (this._depthAge > 1e-9) { this._fusedVelocity = (depth - this._prevDepth) / this._depthAge; this._prevDepth = depth; }
+        this._depthAge = 0;
+      }
+      return this._fusedVelocity;
+    }
+    this._fusedVelocity += calibAccel * dt; this._depthAge += dt;
+    if (newDepthSample) {
+      if (this._firstDepth) { this._prevDepth = depth; this._firstDepth = false; }
+      else if (this._depthAge > 1e-9) {
+        var vDepth = (depth - this._prevDepth) / this._depthAge; this._prevDepth = depth;
+        var beta = this._depthAge / (this._tau + this._depthAge);
+        this._fusedVelocity = (1 - beta) * this._fusedVelocity + beta * vDepth;
+      }
+      this._depthAge = 0;
+    }
+    return this._fusedVelocity;
+  }
+  get velocity() { return this._fusedVelocity; }
+}
+
+// =========================================================================
+// Submarine Physics
+// =========================================================================
+var G = 9.81, RHO = 1000;
+// Hull defaults (user-facing units: mm)
+var DEFAULT_HULL_LENGTH_MM = 300, DEFAULT_HULL_DIAMETER_MM = 50;
+var L = DEFAULT_HULL_LENGTH_MM * 1e-3, R = DEFAULT_HULL_DIAMETER_MM * 0.5e-3;
+var PBS_MAX_ML = 30, CD = 1.0;
+
+function submergedVolume(d, r, l) {
+  if (d >= r) return Math.PI * r * r * l;
+  if (d <= -r) return 0;
+  return (r * r * Math.acos(-d / r) + d * Math.sqrt(r * r - d * d)) * l;
+}
+
+function findEquilibrium(totalMass, r, l) {
+  var lo = -r, hi = r;
+  for (var i = 0; i < 200; i++) { var mid = (lo + hi) / 2; if (RHO * submergedVolume(mid, r, l) < totalMass) lo = mid; else hi = mid; }
+  return (lo + hi) / 2;
+}
+
+// =========================================================================
+// SubmarineSim
+// =========================================================================
+class SubmarineSim {
+  constructor(opts) {
+    opts = opts || {};
+    var targetDepth = opts.targetDepth !== undefined ? opts.targetDepth : 0.5;
+    var dt = opts.dt || 0.001;
+    var calibTimeSec = opts.calibTimeSec !== undefined ? opts.calibTimeSec : 0.5;
+    var fusionTau = opts.fusionTau !== undefined ? opts.fusionTau : 0.5;
+    var maxPumpRate = opts.maxPumpRate !== undefined ? opts.maxPumpRate : 1.5;
+    var kp = opts.kp !== undefined ? opts.kp : 10;
+    var ki = opts.ki !== undefined ? opts.ki : 0.1;
+    var kd = opts.kd !== undefined ? opts.kd : 80;
+    var deadBand = opts.deadBand !== undefined ? opts.deadBand : 0.010;
+    var sensorMode = opts.sensorMode || "both";
+    var accelModel = opts.accelModel || "mpu6050";
+    var hullLengthMm = opts.hullLengthMm !== undefined ? opts.hullLengthMm : DEFAULT_HULL_LENGTH_MM;
+    var hullDiameterMm = opts.hullDiameterMm !== undefined ? opts.hullDiameterMm : DEFAULT_HULL_DIAMETER_MM;
+
+    this.dt = dt; this.maxPumpRate = maxPumpRate; this._accelModelName = accelModel;
+    // Hull geometry (convert mm -> SI)
+    this._L = hullLengthMm * 1e-3;
+    this._R = hullDiameterMm * 0.5e-3;
+    // Drag cross-section (side projection of horizontal cylinder)
+    this._dragArea = this._L * 2 * this._R;
+    // Neutral buoyancy at mid-range of ballast tank
+    this.neutralPbsMl = PBS_MAX_ML / 2.0;
+    // Hull mass: lighter than water so that neutralPbsMl of ballast brings it to exact neutral buoyancy
+    this._M = RHO * Math.PI * this._R * this._R * this._L - this.neutralPbsMl * 1e-3;
+    // Initial conditions — slightly positively buoyant, at surface
+    var initPbs = this.neutralPbsMl - 1;
+    var initMass = this._M + initPbs * 1e-3;
+    this.time = 0; this.depth = findEquilibrium(initMass, this._R, this._L);
+    this.velocity = 0; this.pbsMl = initPbs; this.maxDepth = 0;
+    this.measuredDepth = 0; this.estVelocity = 0; this.accel = 0; this.calibrating = true;
+    this._depthSensor = new MS5837Sensor();
+    var AccelCls = ACCEL_MODELS[accelModel] || MPU6050Accel;
+    this._accelSensor = new AccelCls();
+    this._accelCalib = new AccelCalibrator(calibTimeSec, this._accelSensor.samplePeriod);
+    this._velFusion = new VelocityFusion(fusionTau, sensorMode);
+    this._pid = new PidController(kp, ki, kd, targetDepth, -this.neutralPbsMl, PBS_MAX_ML - this.neutralPbsMl, deadBand);
+    this._prevRawAccel = NaN;
+  }
+  get targetDepth() { return this._pid.setPoint; }
+  set targetDepth(v) { this._pid.setPoint = v; }
+  get sensorMode() { return this._velFusion.mode; }
+  set sensorMode(v) { this._velFusion.mode = v; }
+  get accelModel() { return this._accelModelName; }
+
+  step() {
+    var dt = this.dt;
+    var weight = (this._M + this.pbsMl * 1e-3) * G;
+    var buoyancy = RHO * G * submergedVolume(this.depth, this._R, this._L);
+    var drag = 0.5 * RHO * CD * this._dragArea * this.velocity * Math.abs(this.velocity);
+    this.accel = (weight - buoyancy - drag) / this._M;
+    var result = this._depthSensor.read(this.depth, dt);
+    var measDepth = result[0]; var newDepth = result[1];
+    this.measuredDepth = measDepth;
+    var rawAccel = this._accelSensor.read(this.accel, dt);
+    var newAccelSample = rawAccel !== this._prevRawAccel; this._prevRawAccel = rawAccel;
+    if (!this._accelCalib.isDone) {
+      if (newAccelSample) this._accelCalib.addSample(rawAccel);
+      this.velocity += this.accel * dt; this.depth += this.velocity * dt;
+      this._clamp(); this.calibrating = !this._accelCalib.isDone; this.time += dt; return;
+    }
+    this.calibrating = false;
+    var calibAccel = rawAccel - this._accelCalib.estimatedBias;
+    this.estVelocity = this._velFusion.update(calibAccel, this.measuredDepth, newDepth, dt);
+    var correction = this._pid.update(this.measuredDepth, this.estVelocity, dt);
+    var targetPbs = Math.max(0, Math.min(PBS_MAX_ML, this.neutralPbsMl + correction));
+    var maxChange = this.maxPumpRate * dt;
+    this.pbsMl += Math.max(-maxChange, Math.min(maxChange, targetPbs - this.pbsMl));
+    this.pbsMl = Math.max(0, Math.min(PBS_MAX_ML, this.pbsMl));
+    this.velocity += this.accel * dt; this.depth += this.velocity * dt;
+    this._clamp(); this.time += dt;
+  }
+  _clamp() {
+    if (this.depth < -this._R) { this.depth = -this._R; if (this.velocity < 0) this.velocity = 0; }
+    if (this.depth > this.maxDepth) this.maxDepth = this.depth;
+  }
+}
+
+// =========================================================================
+// 2D Game — Visual Engine
+// =========================================================================
+var canvas = document.getElementById("gameCanvas");
+var ctx = canvas.getContext("2d");
+var W = 0, H = 0;
+
+// View configuration
+var SKY_FRAC = 0.10;
+var FLOOR_FRAC = 0.05;
+var MAX_VIEW_DEPTH = 2.3;
+var skyH = 0, floorH = 0, waterH = 0;
+
+function resizeCanvas() {
+  var container = document.getElementById("game-container");
+  var dpr = window.devicePixelRatio || 1;
+  W = container.clientWidth;
+  H = container.clientHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  skyH = Math.floor(H * SKY_FRAC);
+  floorH = Math.floor(H * FLOOR_FRAC);
+  waterH = H - skyH - floorH;
+}
+
+function depthToY(d) { return skyH + (d / MAX_VIEW_DEPTH) * waterH; }
+function yToDepth(y) { return Math.max(0, Math.min(2, ((y - skyH) / waterH) * MAX_VIEW_DEPTH)); }
+
+// --- Particle systems ---
+var bubbles = [];
+var particles = [];
+var prevPbs = 0;
+
+function initParticles() {
+  particles = [];
+  for (var i = 0; i < 40; i++) {
+    particles.push({
+      x: Math.random() * 2000,
+      y: skyH + Math.random() * waterH,
+      size: 0.5 + Math.random() * 1.5,
+      speed: 2 + Math.random() * 5,
+      alpha: 0.15 + Math.random() * 0.25,
+      drift: (Math.random() - 0.5) * 0.3
+    });
+  }
+}
+
+function emitBubbles(x, y, count) {
+  for (var i = 0; i < count; i++) {
+    bubbles.push({
+      x: x + (Math.random() - 0.5) * 30,
+      y: y + (Math.random() - 0.5) * 15,
+      size: 1.5 + Math.random() * 4,
+      vy: -(25 + Math.random() * 40),
+      wobble: Math.random() * Math.PI * 2,
+      wobbleSpd: 2 + Math.random() * 3,
+      alpha: 0.5 + Math.random() * 0.4,
+      life: 1
+    });
+  }
+}
+
+function updateBubbles(dt) {
+  for (var i = bubbles.length - 1; i >= 0; i--) {
+    var b = bubbles[i];
+    b.y += b.vy * dt;
+    b.x += Math.sin(b.wobble) * 0.6;
+    b.wobble += b.wobbleSpd * dt;
+    b.life -= dt * 0.4;
+    b.alpha = Math.max(0, b.life * 0.5);
+    if (b.life <= 0 || b.y < skyH - 10) { bubbles.splice(i, 1); }
+  }
+}
+
+function updateParticles(dt) {
+  for (var i = 0; i < particles.length; i++) {
+    var p = particles[i];
+    p.x -= p.speed * dt;
+    p.y += p.drift;
+    if (p.x < -10) { p.x = W + 10; p.y = skyH + Math.random() * waterH; }
+  }
+}
+
+// --- Light rays ---
+var rays = [];
+function initRays() {
+  rays = [];
+  for (var i = 0; i < 5; i++) {
+    rays.push({
+      xFrac: 0.15 + (i / 5) * 0.7,
+      width: 18 + Math.random() * 15,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.2 + Math.random() * 0.3,
+      alpha: 0.03 + Math.random() * 0.03
+    });
+  }
+}
+
+// --- Drawing functions ---
+
+function drawSky(t) {
+  var grad = ctx.createLinearGradient(0, 0, 0, skyH);
+  grad.addColorStop(0, "#4a90c4");
+  grad.addColorStop(1, "#6db3f2");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, skyH);
+
+  // Clouds
+  ctx.fillStyle = "rgba(255,255,255,0.25)";
+  for (var i = 0; i < 4; i++) {
+    var cx = ((i * 310 + t * 6) % (W + 200)) - 100;
+    var cy = 10 + i * 8;
+    var cw = 60 + i * 20;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, cw, 8 + i * 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawWaterBackground() {
+  var grad = ctx.createLinearGradient(0, skyH, 0, skyH + waterH);
+  grad.addColorStop(0, "#1a6fc4");
+  grad.addColorStop(0.3, "#0f4f8c");
+  grad.addColorStop(0.6, "#0a3566");
+  grad.addColorStop(1, "#041a33");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, skyH, W, waterH + floorH);
+}
+
+function drawWaterSurface(t) {
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, skyH);
+  for (var x = 0; x <= W; x += 3) {
+    var waveY = skyH
+      + Math.sin(x * 0.015 + t * 1.8) * 3
+      + Math.sin(x * 0.030 + t * 1.1 + 1) * 2
+      + Math.sin(x * 0.008 + t * 0.6) * 4;
+    ctx.lineTo(x, waveY);
+  }
+  ctx.lineTo(W, 0);
+  ctx.closePath();
+  var surfGrad = ctx.createLinearGradient(0, skyH - 10, 0, skyH + 10);
+  surfGrad.addColorStop(0, "#6db3f2");
+  surfGrad.addColorStop(1, "#2288dd");
+  ctx.fillStyle = surfGrad;
+  ctx.fill();
+
+  // Foam highlights
+  ctx.strokeStyle = "rgba(255,255,255,0.25)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (x = 0; x <= W; x += 3) {
+    var fy = skyH
+      + Math.sin(x * 0.015 + t * 1.8) * 3
+      + Math.sin(x * 0.030 + t * 1.1 + 1) * 2
+      + Math.sin(x * 0.008 + t * 0.6) * 4;
+    if (x === 0) ctx.moveTo(x, fy); else ctx.lineTo(x, fy);
+  }
+  ctx.stroke();
+}
+
+function drawLightRays(t) {
+  for (var i = 0; i < rays.length; i++) {
+    var r = rays[i];
+    var baseX = r.xFrac * W + Math.sin(t * r.speed + r.phase) * 35;
+    var topW = r.width;
+    var botW = topW * 2.5;
+    var depth = waterH * 0.85;
+    var alpha = r.alpha + Math.sin(t * 0.7 + r.phase) * 0.015;
+    if (alpha <= 0) continue;
+
+    var grad = ctx.createLinearGradient(0, skyH, 0, skyH + depth);
+    grad.addColorStop(0, "rgba(180,220,255," + (alpha * 1.5) + ")");
+    grad.addColorStop(1, "rgba(180,220,255,0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(baseX - topW / 2, skyH);
+    ctx.lineTo(baseX + topW / 2, skyH);
+    ctx.lineTo(baseX + botW / 2 + 30, skyH + depth);
+    ctx.lineTo(baseX - botW / 2 + 30, skyH + depth);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+function drawSeaFloor(t) {
+  var floorY = H - floorH;
+  var grad = ctx.createLinearGradient(0, floorY, 0, H);
+  grad.addColorStop(0, "#1a3a28");
+  grad.addColorStop(0.3, "#2a4a30");
+  grad.addColorStop(1, "#1a3018");
+  ctx.fillStyle = grad;
+
+  // Undulating floor
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (var x = 0; x <= W; x += 4) {
+    var fy = floorY + Math.sin(x * 0.02 + 1) * 3 + Math.sin(x * 0.007) * 5;
+    ctx.lineTo(x, fy);
+  }
+  ctx.lineTo(W, H);
+  ctx.closePath();
+  ctx.fill();
+
+  // Seaweed tufts
+  ctx.strokeStyle = "#2d6b3f";
+  ctx.lineWidth = 2;
+  for (var i = 0; i < 12; i++) {
+    var sx = (i * 137 + 50) % W;
+    var baseY = floorY + Math.sin(sx * 0.02 + 1) * 3 + Math.sin(sx * 0.007) * 5;
+    var swayH = 12 + (i % 4) * 5;
+    ctx.beginPath();
+    ctx.moveTo(sx, baseY);
+    ctx.quadraticCurveTo(sx + Math.sin(t * 1.2 + i) * 6, baseY - swayH * 0.6, sx + Math.sin(t * 0.8 + i * 2) * 4, baseY - swayH);
+    ctx.stroke();
+  }
+
+  // Small rocks
+  ctx.fillStyle = "#3a5a40";
+  for (i = 0; i < 8; i++) {
+    var rx = (i * 193 + 80) % W;
+    var ry = floorY + Math.sin(rx * 0.02 + 1) * 3 + Math.sin(rx * 0.007) * 5;
+    ctx.beginPath();
+    ctx.ellipse(rx, ry, 4 + i % 3 * 2, 2 + i % 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawDepthScale() {
+  ctx.font = "10px 'Consolas','Courier New',monospace";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  var x = 30;
+  for (var d = 0; d <= 2; d += 0.5) {
+    var y = depthToY(d);
+    ctx.fillStyle = "rgba(200,220,255,0.25)";
+    ctx.fillRect(x + 2, y, 8, 1);
+    ctx.fillStyle = "rgba(200,220,255,0.35)";
+    ctx.fillText(d.toFixed(1) + "m", x, y);
+  }
+  // Minor ticks
+  for (d = 0.25; d <= 2; d += 0.5) {
+    var ty = depthToY(d);
+    ctx.fillStyle = "rgba(200,220,255,0.12)";
+    ctx.fillRect(x + 4, ty, 4, 1);
+  }
+}
+
+function drawTargetLine(targetDepth, t) {
+  var y = depthToY(targetDepth);
+  ctx.save();
+  ctx.setLineDash([8, 6]);
+  ctx.strokeStyle = "rgba(243,139,168,0.6)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(40, y);
+  ctx.lineTo(W - 10, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Arrow marker
+  ctx.fillStyle = "#f38ba8";
+  ctx.beginPath();
+  ctx.moveTo(40, y - 5);
+  ctx.lineTo(48, y);
+  ctx.lineTo(40, y + 5);
+  ctx.closePath();
+  ctx.fill();
+
+  // Depth label
+  ctx.font = "bold 11px 'Consolas','Courier New',monospace";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#f38ba8";
+  ctx.fillText("TARGET " + (targetDepth * 1000).toFixed(0) + "mm", W - 14, y - 10);
+  ctx.restore();
+}
+
+// --- Submarine drawing ---
+function drawSubmarine(subX, subY, angle, pbsFill, t) {
+  ctx.save();
+  ctx.translate(subX, subY);
+  ctx.rotate(angle);
+
+  var hw = 72, hh = 18;
+
+  // Glow / underwater light around submarine
+  var glow = ctx.createRadialGradient(0, 0, 20, 0, 0, 100);
+  glow.addColorStop(0, "rgba(100,180,255,0.06)");
+  glow.addColorStop(1, "rgba(100,180,255,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(-100, -60, 200, 120);
+
+  // Shadow
+  ctx.fillStyle = "rgba(0,0,0,0.18)";
+  ctx.beginPath();
+  ctx.ellipse(3, 4, hw, hh, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Hull body
+  var hullGrad = ctx.createLinearGradient(0, -hh, 0, hh);
+  hullGrad.addColorStop(0, "#6a6a7a");
+  hullGrad.addColorStop(0.35, "#4a4a58");
+  hullGrad.addColorStop(0.65, "#3a3a48");
+  hullGrad.addColorStop(1, "#2a2a36");
+  ctx.fillStyle = hullGrad;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, hw, hh, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#555568";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Hull stripe (waterline)
+  ctx.strokeStyle = "#c0392b";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, hw, hh, 0, 0.05, Math.PI - 0.05);
+  ctx.stroke();
+
+  // Conning tower (sail)
+  var sailX = -4, sailW = 22, sailH = 16;
+  var sailGrad = ctx.createLinearGradient(0, -hh - sailH, 0, -hh);
+  sailGrad.addColorStop(0, "#5a5a6a");
+  sailGrad.addColorStop(1, "#3e3e4e");
+  ctx.fillStyle = sailGrad;
+  ctx.beginPath();
+  ctx.moveTo(sailX - sailW / 2, -hh + 2);
+  ctx.lineTo(sailX - sailW / 3, -hh - sailH);
+  ctx.quadraticCurveTo(sailX, -hh - sailH - 3, sailX + sailW / 3, -hh - sailH);
+  ctx.lineTo(sailX + sailW / 2, -hh + 2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = "#555568";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Sail viewport window
+  ctx.fillStyle = "rgba(130,210,255,0.5)";
+  ctx.beginPath();
+  ctx.roundRect(sailX - 4, -hh - sailH + 3, 8, 5, 1);
+  ctx.fill();
+
+  // Periscope
+  ctx.strokeStyle = "#555";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(sailX + 6, -hh - sailH);
+  ctx.lineTo(sailX + 6, -hh - sailH - 8);
+  ctx.lineTo(sailX + 9, -hh - sailH - 8);
+  ctx.stroke();
+
+  // Bow planes (front fins)
+  ctx.fillStyle = "#444454";
+  ctx.beginPath();
+  ctx.moveTo(hw - 18, -hh + 2);
+  ctx.lineTo(hw - 12, -hh - 7);
+  ctx.lineTo(hw - 6, -hh + 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(hw - 18, hh - 2);
+  ctx.lineTo(hw - 12, hh + 7);
+  ctx.lineTo(hw - 6, hh - 2);
+  ctx.fill();
+
+  // Stern planes & rudder
+  ctx.beginPath();
+  ctx.moveTo(-hw + 6, -hh + 2);
+  ctx.lineTo(-hw + 2, -hh - 9);
+  ctx.lineTo(-hw + 16, -hh + 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(-hw + 6, hh - 2);
+  ctx.lineTo(-hw + 2, hh + 9);
+  ctx.lineTo(-hw + 16, hh - 2);
+  ctx.fill();
+
+  // Propeller
+  var propX = -hw - 6;
+  var propAngle = t * 12;
+  ctx.strokeStyle = "#777";
+  ctx.lineWidth = 2;
+  for (var b = 0; b < 4; b++) {
+    var ba = propAngle + b * Math.PI / 2;
+    ctx.beginPath();
+    ctx.moveTo(propX, 0);
+    ctx.lineTo(propX + Math.cos(ba) * 2, Math.sin(ba) * 10);
+    ctx.stroke();
+  }
+  ctx.fillStyle = "#555";
+  ctx.beginPath();
+  ctx.arc(propX, 0, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Portholes
+  var portPositions = [-40, -20, 0, 20, 40];
+  for (var pi = 0; pi < portPositions.length; pi++) {
+    var px = portPositions[pi];
+    // Interior glow
+    ctx.fillStyle = "rgba(255,230,130,0.2)";
+    ctx.beginPath();
+    ctx.arc(px, 0, 6, 0, Math.PI * 2);
+    ctx.fill();
+    // Glass
+    ctx.fillStyle = "rgba(255,225,120,0.65)";
+    ctx.beginPath();
+    ctx.arc(px, 0, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    // Frame
+    ctx.strokeStyle = "#666";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(px, 0, 4.5, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Navigation lights
+  ctx.fillStyle = "#ff3333";
+  ctx.beginPath();
+  ctx.arc(hw - 3, -3, 1.8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#33ff33";
+  ctx.beginPath();
+  ctx.arc(hw - 3, 3, 1.8, 0, Math.PI * 2);
+  ctx.fill();
+
+  // PBS indicator on hull (small gauge on the side)
+  var gaugeX = 55, gaugeY = -8, gaugeW = 8, gaugeH = 16;
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.fillRect(gaugeX - 1, gaugeY - 1, gaugeW + 2, gaugeH + 2);
+  var fillFrac = pbsFill / PBS_MAX_ML;
+  var neutralFrac = sim ? sim.neutralPbsMl / PBS_MAX_ML : 0.63;
+  var fillColor = Math.abs(fillFrac - neutralFrac) < 0.07 ? "#a6e3a1" : fillFrac > neutralFrac ? "#89b4fa" : "#f9e2af";
+  ctx.fillStyle = "#1a1a2e";
+  ctx.fillRect(gaugeX, gaugeY, gaugeW, gaugeH);
+  ctx.fillStyle = fillColor;
+  ctx.fillRect(gaugeX, gaugeY + gaugeH * (1 - fillFrac), gaugeW, gaugeH * fillFrac);
+
+  ctx.restore();
+}
+
+function drawBubblesAll() {
+  for (var i = 0; i < bubbles.length; i++) {
+    var b = bubbles[i];
+    if (b.alpha <= 0) continue;
+    ctx.globalAlpha = b.alpha;
+    ctx.strokeStyle = "rgba(180,220,255,0.7)";
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2);
+    ctx.stroke();
+    // Highlight
+    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    ctx.beginPath();
+    ctx.arc(b.x - b.size * 0.3, b.y - b.size * 0.3, b.size * 0.25, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawParticlesAll() {
+  for (var i = 0; i < particles.length; i++) {
+    var p = particles[i];
+    ctx.fillStyle = "rgba(180,210,240," + p.alpha + ")";
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// --- PBS Gauge (HUD overlay on canvas) ---
+function drawPBSGauge(pbsMl, neutralMl) {
+  var gx = 12, gy = skyH + 20, gw = 18, gh = waterH * 0.35;
+  var maxH = gh;
+
+  // Background
+  ctx.fillStyle = "rgba(10,14,26,0.75)";
+  ctx.strokeStyle = "rgba(100,130,180,0.3)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(gx - 4, gy - 18, gw + 8, gh + 34, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  // Title
+  ctx.fillStyle = "rgba(200,220,255,0.6)";
+  ctx.font = "bold 8px 'Consolas',monospace";
+  ctx.textAlign = "center";
+  ctx.fillText("PBS", gx + gw / 2, gy - 8);
+
+  // Tank outline
+  ctx.strokeStyle = "rgba(150,170,200,0.4)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(gx, gy, gw, gh);
+
+  // Fill
+  var frac = pbsMl / PBS_MAX_ML;
+  var fillH = frac * gh;
+  var neutralFrac = neutralMl / PBS_MAX_ML;
+
+  var fillGrad = ctx.createLinearGradient(0, gy + gh, 0, gy);
+  fillGrad.addColorStop(0, "rgba(60,140,220,0.8)");
+  fillGrad.addColorStop(1, "rgba(100,180,255,0.6)");
+  ctx.fillStyle = fillGrad;
+  ctx.fillRect(gx, gy + gh - fillH, gw, fillH);
+
+  // Neutral line
+  var ny = gy + gh - neutralFrac * gh;
+  ctx.strokeStyle = "rgba(166,227,161,0.6)";
+  ctx.setLineDash([3, 2]);
+  ctx.beginPath();
+  ctx.moveTo(gx - 2, ny);
+  ctx.lineTo(gx + gw + 2, ny);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Value label
+  ctx.fillStyle = "#cdd6f4";
+  ctx.font = "9px 'Consolas',monospace";
+  ctx.textAlign = "center";
+  ctx.fillText(pbsMl.toFixed(1), gx + gw / 2, gy + gh + 12);
+  ctx.fillStyle = "rgba(200,220,255,0.4)";
+  ctx.fillText("ml", gx + gw / 2, gy + gh + 22);
+}
+
+// --- Caustic light pattern on sea floor ---
+function drawCaustics(t) {
+  var floorY = H - floorH;
+  ctx.globalAlpha = 0.04;
+  ctx.fillStyle = "#88ccff";
+  for (var x = 0; x < W; x += 12) {
+    var intensity = (Math.sin(x * 0.05 + t * 2.3) + Math.sin(x * 0.08 + t * 1.7 + 2)) * 0.5 + 0.5;
+    if (intensity > 0.6) {
+      ctx.globalAlpha = (intensity - 0.6) * 0.08;
+      ctx.fillRect(x, floorY - 8, 10, 12);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// =========================================================================
+// Graph Rendering (with axes, grid lines, autoscale)
+// =========================================================================
+function niceTickInterval(range, maxTicks) {
+  if (range <= 0) return 1;
+  var rough = range / maxTicks;
+  var mag = Math.pow(10, Math.floor(Math.log10(rough)));
+  var residual = rough / mag;
+  var nice;
+  if (residual <= 1.5) nice = 1;
+  else if (residual <= 3) nice = 2;
+  else if (residual <= 7) nice = 5;
+  else nice = 10;
+  return nice * mag;
+}
+
+function drawGraph(canvasEl, data, tData, color, title, refLine, refColor, refLabel) {
+  var dpr = window.devicePixelRatio || 1;
+  var cw = canvasEl.clientWidth;
+  var ch = canvasEl.clientHeight;
+  if (cw < 10 || ch < 10) return;
+  canvasEl.width = cw * dpr;
+  canvasEl.height = ch * dpr;
+
+  var cx = canvasEl.getContext("2d");
+  cx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  // Background
+  cx.fillStyle = "#0d1120";
+  cx.fillRect(0, 0, cw, ch);
+
+  // Margins for axes
+  var marginLeft = 52, marginRight = 12, marginTop = 28, marginBottom = 30;
+  var plotW = cw - marginLeft - marginRight;
+  var plotH = ch - marginTop - marginBottom;
+  if (plotW < 10 || plotH < 10) return;
+
+  // Title
+  cx.fillStyle = color;
+  cx.font = "bold 12px 'Segoe UI',system-ui,sans-serif";
+  cx.textAlign = "center";
+  cx.textBaseline = "top";
+  cx.fillText(title, cw / 2, 8);
+
+  if (!data || data.length < 2) {
+    cx.fillStyle = "rgba(200,220,255,0.3)";
+    cx.font = "11px 'Consolas',monospace";
+    cx.textAlign = "center";
+    cx.textBaseline = "middle";
+    cx.fillText("Waiting for data\u2026", cw / 2, ch / 2);
+    return;
+  }
+
+  // Compute Y range (autoscale)
+  var yMin = data[0], yMax = data[0];
+  for (var i = 1; i < data.length; i++) {
+    if (data[i] < yMin) yMin = data[i];
+    if (data[i] > yMax) yMax = data[i];
+  }
+  if (refLine !== undefined) {
+    if (refLine < yMin) yMin = refLine;
+    if (refLine > yMax) yMax = refLine;
+  }
+  var yRange = yMax - yMin;
+  if (yRange < 0.001) yRange = 0.1;
+  var yPad = yRange * 0.1;
+  yMin -= yPad;
+  yMax += yPad;
+  yRange = yMax - yMin;
+
+  // Compute X range
+  var xMin = tData[0], xMax = tData[tData.length - 1];
+  var xRange = xMax - xMin;
+  if (xRange <= 0) xRange = 1;
+
+  // Tick intervals
+  var yTickInterval = niceTickInterval(yRange, Math.max(3, Math.floor(plotH / 40)));
+  var xTickInterval = niceTickInterval(xRange, Math.max(3, Math.floor(plotW / 70)));
+
+  // Y grid lines + labels
+  cx.font = "10px 'Consolas','Courier New',monospace";
+  cx.textAlign = "right";
+  cx.textBaseline = "middle";
+  var yStart = Math.ceil(yMin / yTickInterval) * yTickInterval;
+  var yDecimals = yTickInterval < 0.01 ? 3 : yTickInterval < 0.1 ? 2 : yTickInterval < 1 ? 1 : 0;
+  for (var yv = yStart; yv <= yMax + yTickInterval * 0.01; yv += yTickInterval) {
+    var py = marginTop + plotH - ((yv - yMin) / yRange) * plotH;
+    if (py < marginTop - 2 || py > marginTop + plotH + 2) continue;
+    // Grid line
+    cx.strokeStyle = "rgba(100,130,180,0.10)";
+    cx.lineWidth = 1;
+    cx.beginPath();
+    cx.moveTo(marginLeft, py);
+    cx.lineTo(marginLeft + plotW, py);
+    cx.stroke();
+    // Tick mark
+    cx.strokeStyle = "rgba(100,130,180,0.30)";
+    cx.beginPath();
+    cx.moveTo(marginLeft - 4, py);
+    cx.lineTo(marginLeft, py);
+    cx.stroke();
+    // Label
+    cx.fillStyle = "rgba(200,220,255,0.55)";
+    cx.fillText(yv.toFixed(yDecimals), marginLeft - 6, py);
+  }
+
+  // X grid lines + labels
+  cx.textAlign = "center";
+  cx.textBaseline = "top";
+  var xStart = Math.ceil(xMin / xTickInterval) * xTickInterval;
+  var xDecimals = xTickInterval < 1 ? 1 : 0;
+  for (var xv = xStart; xv <= xMax + xTickInterval * 0.01; xv += xTickInterval) {
+    var px = marginLeft + ((xv - xMin) / xRange) * plotW;
+    if (px < marginLeft - 2 || px > marginLeft + plotW + 2) continue;
+    // Grid line
+    cx.strokeStyle = "rgba(100,130,180,0.10)";
+    cx.lineWidth = 1;
+    cx.beginPath();
+    cx.moveTo(px, marginTop);
+    cx.lineTo(px, marginTop + plotH);
+    cx.stroke();
+    // Tick mark
+    cx.strokeStyle = "rgba(100,130,180,0.30)";
+    cx.beginPath();
+    cx.moveTo(px, marginTop + plotH);
+    cx.lineTo(px, marginTop + plotH + 4);
+    cx.stroke();
+    // Label
+    cx.fillStyle = "rgba(200,220,255,0.55)";
+    cx.fillText(xv.toFixed(xDecimals) + "s", px, marginTop + plotH + 7);
+  }
+
+  // Axes border
+  cx.strokeStyle = "rgba(100,130,180,0.25)";
+  cx.lineWidth = 1;
+  cx.beginPath();
+  cx.moveTo(marginLeft, marginTop);
+  cx.lineTo(marginLeft, marginTop + plotH);
+  cx.lineTo(marginLeft + plotW, marginTop + plotH);
+  cx.stroke();
+
+  // Reference line
+  if (refLine !== undefined) {
+    var ry = marginTop + plotH - ((refLine - yMin) / yRange) * plotH;
+    if (ry >= marginTop && ry <= marginTop + plotH) {
+      cx.save();
+      cx.strokeStyle = refColor || "rgba(108,112,134,0.5)";
+      cx.setLineDash([6, 4]);
+      cx.lineWidth = 1.5;
+      cx.beginPath();
+      cx.moveTo(marginLeft, ry);
+      cx.lineTo(marginLeft + plotW, ry);
+      cx.stroke();
+      cx.setLineDash([]);
+      if (refLabel) {
+        cx.fillStyle = refColor || "rgba(108,112,134,0.5)";
+        cx.font = "10px 'Consolas',monospace";
+        cx.textAlign = "right";
+        cx.textBaseline = "bottom";
+        cx.fillText(refLabel, marginLeft + plotW - 2, ry - 3);
+      }
+      cx.restore();
+    }
+  }
+
+  // Clip plot area for data line
+  cx.save();
+  cx.beginPath();
+  cx.rect(marginLeft, marginTop, plotW, plotH);
+  cx.clip();
+
+  // Data line
+  cx.strokeStyle = color;
+  cx.lineWidth = 1.5;
+  cx.beginPath();
+  for (var di = 0; di < data.length; di++) {
+    var dx = marginLeft + ((tData[di] - xMin) / xRange) * plotW;
+    var dy = marginTop + plotH - ((data[di] - yMin) / yRange) * plotH;
+    if (di === 0) cx.moveTo(dx, dy); else cx.lineTo(dx, dy);
+  }
+  cx.stroke();
+
+  cx.restore();
+}
+
+// =========================================================================
+// UI Setup & Game Loop
+// =========================================================================
+var SIM_SPEED = 10, FPS = 30, DT = 0.001;
+var STEPS_PER_FRAME = Math.floor(SIM_SPEED / (FPS * DT));
+var MAX_POINTS = 300;
+var TOLERANCE_M = 0.010;
+
+var sim = null, running = false, animId = null;
+var tBuf = [], depthBuf = [], pbsBuf = [];
+var settleChangeTime = 0, settled = false, settleTime = null;
+var animTime = 0;
+var lastFrameTime = 0;
+var graphDepthCanvas = document.getElementById("graphDepth");
+var graphPbsCanvas = document.getElementById("graphPbs");
+
+function createSim() {
+  var target = parseFloat(document.getElementById("target-slider").value);
+  var accel = document.querySelector('input[name="accel"]:checked').value;
+  var pOn = document.getElementById("chk-pressure").checked;
+  var aOn = document.getElementById("chk-accel").checked;
+  var hullLengthMm = parseFloat(document.getElementById("length-slider").value);
+  var hullDiameterMm = parseFloat(document.getElementById("diameter-slider").value);
+  var mode = "both";
+  if (pOn && !aOn) mode = "pressure";
+  else if (!pOn && aOn) mode = "accel";
+  _gaussianRng = new GaussianRng(42);
+  sim = new SubmarineSim({ targetDepth: target, sensorMode: mode, accelModel: accel, hullLengthMm: hullLengthMm, hullDiameterMm: hullDiameterMm });
+  tBuf = []; depthBuf = []; pbsBuf = [];
+  bubbles = [];
+  settleChangeTime = 0; settled = false; settleTime = null;
+  prevPbs = sim.pbsMl;
+  animTime = 0;
+  record();
+  updateMassDisplay();
+}
+
+function record() {
+  tBuf.push(sim.time);
+  depthBuf.push(sim.depth);
+  pbsBuf.push(sim.pbsMl);
+  if (tBuf.length > MAX_POINTS) {
+    var excess = tBuf.length - MAX_POINTS;
+    tBuf.splice(0, excess); depthBuf.splice(0, excess); pbsBuf.splice(0, excess);
+  }
+}
+
+function updateHUD() {
+  document.getElementById("m-time").textContent = sim.time.toFixed(1) + " s";
+  document.getElementById("m-depth").textContent = (sim.depth * 1000).toFixed(1) + " mm";
+  document.getElementById("m-target").textContent = (sim.targetDepth * 1000).toFixed(0) + " mm";
+  document.getElementById("m-pbs").textContent = sim.pbsMl.toFixed(1) + " ml";
+  document.getElementById("m-vel").textContent = (sim.velocity * 1000).toFixed(1) + " mm/s";
+
+  var depthError = Math.abs(sim.depth - sim.targetDepth);
+  if (!settled && depthError <= TOLERANCE_M) { settled = true; settleTime = sim.time - settleChangeTime; }
+  var el = document.getElementById("m-settle");
+  if (settleTime !== null) { el.textContent = "\u2713 " + settleTime.toFixed(1) + "s"; el.style.color = "var(--green)"; }
+  else if (settleChangeTime > 0 || sim.time > 0.1) { el.textContent = "\u23F3 " + (sim.time - settleChangeTime).toFixed(1) + "s"; el.style.color = "var(--yellow)"; }
+  else el.textContent = "";
+}
+
+function renderFrame(t) {
+  resizeCanvas();
+  var realDt = lastFrameTime > 0 ? Math.min((t - lastFrameTime) / 1000, 0.1) : 0.033;
+  lastFrameTime = t;
+  animTime += realDt;
+
+  // Update visual particles
+  updateBubbles(realDt);
+  updateParticles(realDt);
+
+  // Emit bubbles from PBS pump activity
+  var pbsDelta = Math.abs(sim.pbsMl - prevPbs);
+  if (pbsDelta > 0.01) {
+    var subX = W * 0.38;
+    var subY = depthToY(sim.depth);
+    emitBubbles(subX - 60, subY + 10, Math.ceil(pbsDelta * 3));
+  }
+  prevPbs = sim.pbsMl;
+
+  // Also emit ambient bubbles occasionally
+  if (Math.random() < 0.03) {
+    emitBubbles(Math.random() * W, skyH + Math.random() * waterH * 0.8, 1);
+  }
+
+  // --- Render scene ---
+  ctx.clearRect(0, 0, W, H);
+
+  drawWaterBackground();
+  drawLightRays(animTime);
+  drawCaustics(animTime);
+  drawSeaFloor(animTime);
+  drawParticlesAll();
+
+  // Target depth line
+  if (sim) drawTargetLine(sim.targetDepth, animTime);
+
+  // Depth scale
+  drawDepthScale();
+
+  // Submarine
+  if (sim) {
+    var subX = W * 0.38;
+    var subY = depthToY(sim.depth);
+    var tilt = Math.max(-0.22, Math.min(0.22, sim.velocity * 4));
+    drawSubmarine(subX, subY, tilt, sim.pbsMl, animTime);
+  }
+
+  drawBubblesAll();
+
+  // Water surface (drawn on top so it overlays everything above water)
+  drawSky(animTime);
+  drawWaterSurface(animTime);
+
+  // PBS Gauge
+  if (sim) drawPBSGauge(sim.pbsMl, sim.neutralPbsMl);
+}
+
+function loop(timestamp) {
+  if (!running) return;
+  for (var i = 0; i < STEPS_PER_FRAME; i++) sim.step();
+  record();
+  renderFrame(timestamp || performance.now());
+  updateHUD();
+
+  // Graphs
+  drawGraph(graphDepthCanvas, depthBuf, tBuf, "#89b4fa", "Depth History", sim.targetDepth, "rgba(243,139,168,0.6)", "target");
+  drawGraph(graphPbsCanvas, pbsBuf, tBuf, "#a6e3a1", "PBS History", sim.neutralPbsMl, "rgba(108,112,134,0.5)", "neutral");
+
+  animId = requestAnimationFrame(loop);
+}
+
+function play() {
+  running = true;
+  document.getElementById("btn-play").classList.add("active");
+  document.getElementById("btn-pause").classList.remove("active");
+  lastFrameTime = 0;
+  loop(performance.now());
+}
+function pause() {
+  running = false;
+  document.getElementById("btn-pause").classList.add("active");
+  document.getElementById("btn-play").classList.remove("active");
+  if (animId) cancelAnimationFrame(animId);
+}
+function resetSim() {
+  pause();
+  createSim();
+  lastFrameTime = 0;
+  renderFrame(performance.now());
+  updateHUD();
+  drawGraph(graphDepthCanvas, depthBuf, tBuf, "#89b4fa", "Depth History");
+  drawGraph(graphPbsCanvas, pbsBuf, tBuf, "#a6e3a1", "PBS History", sim.neutralPbsMl, "rgba(108,112,134,0.5)", "neutral");
+}
+
+// --- Event handlers ---
+document.getElementById("btn-play").addEventListener("click", play);
+document.getElementById("btn-pause").addEventListener("click", pause);
+document.getElementById("btn-reset").addEventListener("click", resetSim);
+
+document.getElementById("target-slider").addEventListener("input", function(e) {
+  var val = parseFloat(e.target.value);
+  document.getElementById("slider-val").textContent = val.toFixed(2) + " m";
+  if (sim) { sim.targetDepth = val; settleChangeTime = sim.time; settled = false; settleTime = null; }
+});
+
+function updateSensorMode() {
+  var pOn = document.getElementById("chk-pressure").checked;
+  var aOn = document.getElementById("chk-accel").checked;
+  if (!pOn && !aOn) { document.getElementById("chk-pressure").checked = true; if (sim) sim.sensorMode = "pressure"; return; }
+  if (sim) { if (pOn && aOn) sim.sensorMode = "both"; else if (pOn) sim.sensorMode = "pressure"; else sim.sensorMode = "accel"; }
+}
+document.getElementById("chk-pressure").addEventListener("change", updateSensorMode);
+document.getElementById("chk-accel").addEventListener("change", updateSensorMode);
+document.querySelectorAll('input[name="accel"]').forEach(function(r) { r.addEventListener("change", function() { var wasRunning = running; resetSim(); if (wasRunning) play(); }); });
+
+function updateMassDisplay() {
+  if (sim) document.getElementById("mass-val").textContent = (sim._M * 1000).toFixed(0) + " g";
+}
+
+document.getElementById("length-slider").addEventListener("input", function(e) {
+  var val = parseFloat(e.target.value);
+  document.getElementById("length-val").textContent = val.toFixed(0) + " mm";
+  var wasRunning = running; resetSim(); if (wasRunning) play();
+});
+
+document.getElementById("diameter-slider").addEventListener("input", function(e) {
+  var val = parseFloat(e.target.value);
+  document.getElementById("diameter-val").textContent = val.toFixed(0) + " mm";
+  var wasRunning = running; resetSim(); if (wasRunning) play();
+});
+
+// Click-to-set-target
+canvas.addEventListener("click", function(e) {
+  var rect = canvas.getBoundingClientRect();
+  var y = e.clientY - rect.top;
+  if (y < skyH) return;
+  var depth = yToDepth(y);
+  depth = Math.round(depth * 100) / 100;
+  depth = Math.max(0, Math.min(2, depth));
+  document.getElementById("target-slider").value = depth;
+  document.getElementById("slider-val").textContent = depth.toFixed(2) + " m";
+  if (sim) { sim.targetDepth = depth; settleChangeTime = sim.time; settled = false; settleTime = null; }
+});
+
+window.addEventListener("resize", function() {
+  if (!running && sim) {
+    renderFrame(performance.now());
+    drawGraph(graphDepthCanvas, depthBuf, tBuf, "#89b4fa", "Depth History", sim.targetDepth, "rgba(243,139,168,0.6)", "target");
+    drawGraph(graphPbsCanvas, pbsBuf, tBuf, "#a6e3a1", "PBS History", sim.neutralPbsMl, "rgba(108,112,134,0.5)", "neutral");
+  }
+});
+
+// --- Initialize ---
+resizeCanvas();
+initParticles();
+initRays();
+createSim();
+renderFrame(performance.now());
+updateHUD();
+play();

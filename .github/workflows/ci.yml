@@ -1,4 +1,4 @@
-# CI check for pull requests — validates web deployment artifact
+# CI check for pull requests — validates web deployment artifact and runs simulation
 name: CI
 
 on:
@@ -41,3 +41,18 @@ jobs:
         uses: actions/upload-pages-artifact@v3
         with:
           path: web
+
+  simulate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run simulation variants
+        working-directory: python
+        run: python run_variants.py

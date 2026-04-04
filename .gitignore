@@ -1,14 +1,3 @@
-# .NET
-bin/
-obj/
-*.user
-*.suo
-*.userosscache
-*.sln.docstates
-*.dll
-*.exe
-*.pdb
-
 # Python
 __pycache__/
 *.py[cod]

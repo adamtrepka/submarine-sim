@@ -183,6 +183,32 @@ Po uruchomieniu GUI widoczne ciągłe oscylacje PBS. Przyczyna: szum prędkości
 - Integral powoli zanika (`*= 0.99`) w strefie dead band
 - Efekt: PBS stabilizuje się na 19.05ml od ~43s i nie oscyluje
 
+### Faza 10: Wersja webowa — port na JavaScript + gra 2D
+
+Port symulacji Python do czystego JavaScript w jednym pliku HTML (`web/index.html`, ~1362 linii):
+
+- Wszystkie klasy (RNG, sensory, PID, kalibracja, fuzja, fizyka) wierne portowi Python
+- **Wizualizacja 2D na HTML5 Canvas:** animowany łódź podwodna z efektami (bąbelki, promienie światła, rafa, fale)
+- HUD z metrykami w czasie rzeczywistym (głębokość, PBS, prędkość, settle time)
+- Kliknięcie w wodę ustawia docelową głębokość
+- Dwa wykresy (głębokość + PBS) z osiami, autoskalowaniem i liniami referencyjnymi
+- Responsywny layout dwukolumnowy (gra | wykresy)
+- Deploy na GitHub Pages via GitHub Actions (`deploy-pages.yml`)
+- Cache-control meta tags dla iOS Safari
+
+### Faza 11: Regulacja masy/objętości kadłuba
+
+Dodano parametry `--weight` i `--volume` do CLI oraz suwaki w wersji webowej:
+
+- Masa i objętość wpływają **wyłącznie na opór hydrodynamiczny** (drag area + weight factor)
+- Pływalność, PBS i punkt równowagi pozostają stałe (bazują na fizycznych stałych cylindra)
+- Skrypt `run_variants.py` — porównanie 6 wariantów masy/objętości w tabeli wynikowej
+- CI pipeline (`ci.yml`) uruchamia walidację HTML + symulację wariantów na każdym PR
+
+### Faza 12: Usunięcie kodu .NET
+
+Oryginalny kod C# (`dotnet/`) usunięty z repozytorium — Python jest teraz jedyną implementacją referencyjną. Kod .NET służył jako proof-of-concept w fazie prototypowania.
+
 ---
 
 ## Architektura regulatora (finalna)
@@ -289,20 +315,21 @@ Po uruchomieniu GUI widoczne ciągłe oscylacje PBS. Przyczyna: szum prędkości
 
 ```
 submarine-sim/
-├── dotnet/                 # Oryginalna implementacja C#
-│   ├── Program.cs          # ~495 linii — cała symulacja w jednym pliku
-│   ├── Demo.csproj         # .NET 10.0 console app
-│   └── Demo.sln            # Solution file
-│
-├── python/                 # Port na Python + GUI
-│   ├── main.py             # ~727 linii — symulacja + klasa SubmarineSim + CLI
-│   └── gui.py              # ~354 linii — wizualizacja matplotlib (Qt5Agg)
+├── python/                 # Symulacja Python + GUI
+│   ├── main.py             # ~760 linii — symulacja + klasa SubmarineSim + CLI
+│   ├── gui.py              # ~354 linii — wizualizacja matplotlib (Qt5Agg)
+│   └── run_variants.py     # ~89 linii — porównanie wariantów masy/objętości
 │
 ├── web/                    # Wersja webowa (GitHub Pages)
-│   └── index.html          # Samodzielna strona HTML/CSS/JS — port symulacji Python
+│   └── index.html          # ~1362 linii — samodzielna strona HTML/CSS/JS z grą 2D
+│
+├── assets/
+│   ├── gui.png             # Screenshot GUI Python
+│   └── web.png             # Screenshot wersji webowej
 │
 ├── .github/workflows/
-│   └── deploy-pages.yml    # GitHub Actions — deploy na GitHub Pages
+│   ├── deploy-pages.yml    # GitHub Actions — deploy na GitHub Pages
+│   └── ci.yml              # CI — walidacja HTML + uruchomienie symulacji wariantów
 │
 └── readme.md               # Ten plik
 ```
@@ -315,6 +342,7 @@ python main.py --accel adxl355                     # ADXL355, tryb both
 python main.py --mode pressure                     # MPU6050, tylko ciśnienie
 python main.py --accel adxl355 --mode accel         # ADXL355, tylko akcelerometr
 python main.py --target 0.15 --time 30             # krótszy dystans, 30s
+python main.py --weight 600 --volume 620           # zmiana masy/objętości (wpływ na opór)
 python main.py -h                                  # pomoc
 ```
 
@@ -324,6 +352,8 @@ python main.py -h                                  # pomoc
 | `--mode` | `both`, `pressure`, `accel` | `both` | Tryb fuzji prędkości |
 | `--target` | float | `0.5` | Docelowa głębokość (m) |
 | `--time` | float | `60` | Czas symulacji (s) |
+| `--weight` | float | `570` | Masa kadłuba w gramach (wpływ na opór hydrodynamiczny) |
+| `--volume` | float | `589` | Objętość kadłuba w ml (wpływ na opór hydrodynamiczny) |
 
 ## Historia commitów
 
@@ -335,6 +365,13 @@ python main.py -h                                  # pomoc
 | `f4ba7d5` | `fix: suppress PBS oscillations with 10mm dead band and add settle-time indicator` |
 | `f5476e5` | `feat: add sensor mode selection (pressure, accelerometer, or both)` |
 | `cb4519c` | `feat: add CLI arguments for sensor mode, accelerometer model, target depth and sim time` |
+| `d49c2f4` | `feat: add web-based submarine simulation for GitHub Pages` (PR #1) |
+| `5777e68` | `feat: transform web version into 2D game with submarine visualization` (PR #2) |
+| `67f0b57` | `ci: add CI workflow to validate web deployment on pull requests` |
+| `bae2850` | `feat: remove dotnet code, add weight/volume regulation to Python and web` (PR #3) |
+| `ff83738` | `ci: add simulation variants stage, run_variants.py script` |
+| `c96245d` | `feat: redesign web UI — two-column layout with proper graph axes and autoscale` (PR #4) |
+| `8ca613f` | `fix: add cache-control meta tags to prevent iOS Safari stale caching` (PR #5) |
 
 ---
 
@@ -415,3 +452,5 @@ python main.py -h                                  # pomoc
 - **Prądy/zaburzenia** — dodanie sił zewnętrznych do symulacji
 - **Efekty termiczne** — dryf biasu czujników z temperaturą
 - **Filtr Kalmana** — zastąpienie filtru komplementarnego dla lepszej estymacji stanu
+- **Mobilne UI** — optymalizacja wersji webowej pod urządzenia dotykowe
+- **Multiplayer/scenariusze** — predefiniowane trajektorie lub wyzwania w wersji webowej

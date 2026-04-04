@@ -296,23 +296,24 @@ class VelocityFusion {
 // =========================================================================
 // Submarine Physics
 // =========================================================================
-var G = 9.81, RHO = 1000, DEFAULT_L = 0.30, DEFAULT_R = 0.025, DEFAULT_HULL_MASS = 0.570;
-var DEFAULT_VOLUME_ML = Math.PI * DEFAULT_R * DEFAULT_R * DEFAULT_L * 1e6;
-var PBS_MAX_ML = 30, CD = 1.0;
+var G = 9.81, RHO = 1000, L = 0.30, R = 0.025, HULL_MASS = 0.570;
+var DEFAULT_HULL_MASS_G = HULL_MASS * 1000;
+var DEFAULT_VOLUME_ML = Math.PI * R * R * L * 1e6;
+var PBS_MAX_ML = 30, CD = 1.0, DRAG_AREA = L * 2 * R;
 
-function radiusFromVolume(volumeMl, length) {
-  return Math.sqrt((volumeMl * 1e-6) / (Math.PI * length));
+function radiusFromVolume(volumeMl) {
+  return Math.sqrt((volumeMl * 1e-6) / (Math.PI * L));
 }
 
-function submergedVolume(d, r, length) {
-  if (d >= r) return Math.PI * r * r * length;
-  if (d <= -r) return 0;
-  return (r * r * Math.acos(-d / r) + d * Math.sqrt(r * r - d * d)) * length;
+function submergedVolume(d) {
+  if (d >= R) return Math.PI * R * R * L;
+  if (d <= -R) return 0;
+  return (R * R * Math.acos(-d / R) + d * Math.sqrt(R * R - d * d)) * L;
 }
 
-function findEquilibrium(totalMass, r, length) {
-  var lo = -r, hi = r;
-  for (var i = 0; i < 200; i++) { var mid = (lo + hi) / 2; if (RHO * submergedVolume(mid, r, length) < totalMass) lo = mid; else hi = mid; }
+function findEquilibrium(totalMass) {
+  var lo = -R, hi = R;
+  for (var i = 0; i < 200; i++) { var mid = (lo + hi) / 2; if (RHO * submergedVolume(mid) < totalMass) lo = mid; else hi = mid; }
   return (lo + hi) / 2;
 }
 
@@ -333,18 +334,19 @@ class SubmarineSim {
     var deadBand = opts.deadBand !== undefined ? opts.deadBand : 0.010;
     var sensorMode = opts.sensorMode || "both";
     var accelModel = opts.accelModel || "mpu6050";
-    var hullMassG = opts.hullMassG !== undefined ? opts.hullMassG : DEFAULT_HULL_MASS * 1000;
+    var hullMassG = opts.hullMassG !== undefined ? opts.hullMassG : DEFAULT_HULL_MASS_G;
     var volumeMl = opts.volumeMl !== undefined ? opts.volumeMl : DEFAULT_VOLUME_ML;
 
     this.dt = dt; this.maxPumpRate = maxPumpRate; this._accelModelName = accelModel;
-    this.hullMass = hullMassG / 1000;
+    // User-adjustable drag parameters
+    this.hullMassG = hullMassG;
     this.volumeMl = volumeMl;
-    this._length = DEFAULT_L;
-    this._radius = radiusFromVolume(volumeMl, this._length);
-    this._dragArea = this._length * 2 * this._radius;
-    this.neutralPbsMl = (RHO * volumeMl * 1e-6 - this.hullMass) * 1e3;
+    this._dragArea = L * 2 * radiusFromVolume(volumeMl);
+    this._dragWeightFactor = hullMassG / DEFAULT_HULL_MASS_G;
+    // Fixed constants for buoyancy/PBS
+    this.neutralPbsMl = (RHO * Math.PI * R * R * L - HULL_MASS) * 1e3;
     var initPbs = this.neutralPbsMl - 1;
-    this.time = 0; this.depth = findEquilibrium(this.hullMass + initPbs * 1e-3, this._radius, this._length);
+    this.time = 0; this.depth = findEquilibrium(HULL_MASS + initPbs * 1e-3);
     this.velocity = 0; this.pbsMl = initPbs; this.maxDepth = 0;
     this.measuredDepth = 0; this.estVelocity = 0; this.accel = 0; this.calibrating = true;
     this._depthSensor = new MS5837Sensor();
@@ -362,10 +364,10 @@ class SubmarineSim {
 
   step() {
     var dt = this.dt;
-    var totalMass = this.hullMass + this.pbsMl * 1e-3;
+    var totalMass = HULL_MASS + this.pbsMl * 1e-3;
     var weight = totalMass * G;
-    var buoyancy = RHO * G * submergedVolume(this.depth, this._radius, this._length);
-    var drag = 0.5 * RHO * CD * this._dragArea * this.velocity * Math.abs(this.velocity);
+    var buoyancy = RHO * G * submergedVolume(this.depth);
+    var drag = 0.5 * RHO * CD * this._dragArea * this.velocity * Math.abs(this.velocity) * this._dragWeightFactor;
     this.accel = (weight - buoyancy - drag) / totalMass;
     var result = this._depthSensor.read(this.depth, dt);
     var measDepth = result[0]; var newDepth = result[1];
@@ -389,7 +391,7 @@ class SubmarineSim {
     this._clamp(); this.time += dt;
   }
   _clamp() {
-    if (this.depth < -this._radius) { this.depth = -this._radius; if (this.velocity < 0) this.velocity = 0; }
+    if (this.depth < -R) { this.depth = -R; if (this.velocity < 0) this.velocity = 0; }
     if (this.depth > this.maxDepth) this.maxDepth = this.depth;
   }
 }

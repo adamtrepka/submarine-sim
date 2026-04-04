@@ -5,7 +5,7 @@ Usage:
     python python/run_variants.py
 """
 
-from main import SubmarineSim, DEFAULT_HULL_MASS, DEFAULT_VOLUME_ML
+from main import SubmarineSim, DEFAULT_HULL_MASS_G, DEFAULT_VOLUME_ML
 
 TOLERANCE_M = 0.010  # ±10 mm settle tolerance
 

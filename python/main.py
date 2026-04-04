@@ -417,37 +417,40 @@ class VelocityFusion:
 G = 9.81
 RHO = 1000.0
 
-# Default hull parameters
-DEFAULT_LENGTH = 0.30       # m
-DEFAULT_RADIUS = 0.025      # m
-DEFAULT_HULL_MASS = 0.570   # kg (570 g)
-DEFAULT_VOLUME_ML = math.pi * DEFAULT_RADIUS ** 2 * DEFAULT_LENGTH * 1e6  # ~589 ml
+L = 0.30
+R = 0.025
+HULL_MASS = 0.570
+
+# Default values for user-adjustable drag parameters
+DEFAULT_HULL_MASS_G = HULL_MASS * 1000          # 570 g
+DEFAULT_VOLUME_ML = math.pi * R * R * L * 1e6   # ~589 ml
 
 PBS_MAX_ML = 30.0
 
 CD = 1.0
+DRAG_AREA = L * 2 * R
 
 
-def _radius_from_volume(volume_ml: float, length: float) -> float:
-    """Derive cylinder radius from volume (ml) and length (m)."""
+def _radius_from_volume(volume_ml: float) -> float:
+    """Derive cylinder radius from volume (ml) and hull length."""
     volume_m3 = volume_ml * 1e-6
-    return math.sqrt(volume_m3 / (math.pi * length))
+    return math.sqrt(volume_m3 / (math.pi * L))
 
 
-def submerged_volume(d: float, r: float, length: float) -> float:
-    if d >= r:
-        return math.pi * r * r * length
-    if d <= -r:
+def submerged_volume(d: float) -> float:
+    if d >= R:
+        return math.pi * R * R * L
+    if d <= -R:
         return 0.0
-    area = r * r * math.acos(-d / r) + d * math.sqrt(r * r - d * d)
-    return area * length
+    area = R * R * math.acos(-d / R) + d * math.sqrt(R * R - d * d)
+    return area * L
 
 
-def find_equilibrium(total_mass_kg: float, r: float, length: float) -> float:
-    lo, hi = -r, r
+def find_equilibrium(total_mass_kg: float) -> float:
+    lo, hi = -R, R
     for _ in range(200):
         mid = (lo + hi) / 2.0
-        buoyancy = RHO * submerged_volume(mid, r, length)
+        buoyancy = RHO * submerged_volume(mid)
         if buoyancy < total_mass_kg:
             lo = mid
         else:
@@ -477,7 +480,7 @@ class SubmarineSim:
         dead_band: float = 0.010,
         sensor_mode: str = "both",
         accel_model: str = "mpu6050",
-        hull_mass_g: float = DEFAULT_HULL_MASS * 1000,
+        hull_mass_g: float = DEFAULT_HULL_MASS_G,
         volume_ml: float = DEFAULT_VOLUME_ML,
     ) -> None:
         if accel_model not in ACCEL_MODELS:
@@ -488,20 +491,19 @@ class SubmarineSim:
         self.max_pump_rate = max_pump_rate
         self._accel_model_name: str = accel_model
 
-        # Hull parameters
-        self.hull_mass: float = hull_mass_g / 1000.0  # kg
+        # User-adjustable parameters (affect drag only)
+        self.hull_mass_g: float = hull_mass_g
         self.volume_ml: float = volume_ml
-        self._length: float = DEFAULT_LENGTH
-        self._radius: float = _radius_from_volume(volume_ml, self._length)
-        self._drag_area: float = self._length * 2 * self._radius
+        self._drag_area: float = L * 2 * _radius_from_volume(volume_ml)
+        self._drag_weight_factor: float = hull_mass_g / DEFAULT_HULL_MASS_G
 
-        # Neutral buoyancy
-        self.neutral_pbs_ml = (RHO * volume_ml * 1e-6 - self.hull_mass) * 1e3
+        # Neutral buoyancy (fixed constants)
+        self.neutral_pbs_ml = (RHO * math.pi * R * R * L - HULL_MASS) * 1e3
 
         # Initial conditions — slightly negatively buoyant
         init_pbs_ml = self.neutral_pbs_ml - 1.0
-        init_mass = self.hull_mass + init_pbs_ml * 1e-3
-        d0 = find_equilibrium(init_mass, self._radius, self._length)
+        init_mass = HULL_MASS + init_pbs_ml * 1e-3
+        d0 = find_equilibrium(init_mass)
 
         # State
         self.time: float = 0.0
@@ -564,11 +566,16 @@ class SubmarineSim:
         """Advance simulation by one dt step."""
         dt = self.dt
 
-        # --- Physics ---
-        total_mass = self.hull_mass + self.pbs_ml * 1e-3
+        # --- Physics (fixed hull constants for buoyancy/weight) ---
+        total_mass = HULL_MASS + self.pbs_ml * 1e-3
         weight = total_mass * G
-        buoyancy = RHO * G * submerged_volume(self.depth, self._radius, self._length)
-        drag = 0.5 * RHO * CD * self._drag_area * self.velocity * abs(self.velocity)
+        buoyancy = RHO * G * submerged_volume(self.depth)
+        # Drag uses user-adjustable area and weight factor
+        drag = (
+            0.5 * RHO * CD * self._drag_area
+            * self.velocity * abs(self.velocity)
+            * self._drag_weight_factor
+        )
         self.accel = (weight - buoyancy - drag) / total_mass
 
         # --- Sensor readings ---
@@ -615,8 +622,8 @@ class SubmarineSim:
     # --- Helpers ---
 
     def _clamp(self) -> None:
-        if self.depth < -self._radius:
-            self.depth = -self._radius
+        if self.depth < -R:
+            self.depth = -R
             if self.velocity < 0:
                 self.velocity = 0.0
         if self.depth > self.max_depth:
@@ -655,14 +662,14 @@ def main() -> None:
     parser.add_argument(
         "--weight",
         type=float,
-        default=DEFAULT_HULL_MASS * 1000,
-        help=f"hull mass in grams (default: {DEFAULT_HULL_MASS * 1000:.0f})",
+        default=DEFAULT_HULL_MASS_G,
+        help=f"hull mass in grams for drag calculation (default: {DEFAULT_HULL_MASS_G:.0f})",
     )
     parser.add_argument(
         "--volume",
         type=float,
         default=DEFAULT_VOLUME_ML,
-        help=f"hull volume in ml (default: {DEFAULT_VOLUME_ML:.1f})",
+        help=f"hull volume in ml for drag calculation (default: {DEFAULT_VOLUME_ML:.1f})",
     )
     args = parser.parse_args()
 
@@ -678,18 +685,19 @@ def main() -> None:
     steps = int(sim_time / sim.dt)
     print_every = int(1.0 / sim.dt)
 
-    r = sim._radius
-    l = sim._length
-
     # --- Header ---
     print("=== Submarine PID Depth Control ===")
     print(
-        f"Cylinder: {l * 100:.0f}cm x dia {r * 200:.1f}cm, "
-        f"Hull: {sim.hull_mass * 1000:.0f}g"
+        f"Cylinder: {L * 100:.0f}cm x dia {R * 200:.0f}cm, "
+        f"Hull: {HULL_MASS * 1000:.0f}g"
     )
     print(
-        f"Volume: {sim.volume_ml:.1f}ml, "
+        f"Volume: {math.pi * R * R * L * 1e6:.1f}ml, "
         f"Neutral PBS: {sim.neutral_pbs_ml:.1f}ml"
+    )
+    print(
+        f"Drag params: weight={args.weight:.0f}g, volume={args.volume:.0f}ml, "
+        f"drag_area={sim._drag_area:.5f}m2"
     )
     print(f"Init: PBS={sim.pbs_ml:.1f}ml, depth={sim.depth * 1000:.1f}mm")
     print()

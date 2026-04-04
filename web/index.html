@@ -89,14 +89,18 @@
         <input type="range" id="target-slider" min="0" max="2" step="0.01" value="0.50">
       </div>
       <div class="p-section">
-        <h3>Hull Weight</h3>
-        <div class="val-display" id="weight-val">570 g</div>
-        <input type="range" id="weight-slider" min="300" max="800" step="1" value="570">
+        <h3>Hull Length</h3>
+        <div class="val-display" id="length-val">300 mm</div>
+        <input type="range" id="length-slider" min="100" max="600" step="1" value="300">
       </div>
       <div class="p-section">
-        <h3>Hull Volume</h3>
-        <div class="val-display" id="volume-val">589 ml</div>
-        <input type="range" id="volume-slider" min="300" max="1000" step="1" value="589">
+        <h3>Hull Diameter</h3>
+        <div class="val-display" id="diameter-val">50 mm</div>
+        <input type="range" id="diameter-slider" min="20" max="100" step="1" value="50">
+      </div>
+      <div class="p-section">
+        <h3>Hull Mass</h3>
+        <div class="val-display" id="mass-val">574 g</div>
       </div>
       <div class="p-section">
         <h3>Velocity Sensor</h3>
@@ -311,24 +315,21 @@ class VelocityFusion {
 // =========================================================================
 // Submarine Physics
 // =========================================================================
-var G = 9.81, RHO = 1000, L = 0.30, R = 0.025, HULL_MASS = 0.570;
-var DEFAULT_HULL_MASS_G = HULL_MASS * 1000;
-var DEFAULT_VOLUME_ML = Math.PI * R * R * L * 1e6;
-var PBS_MAX_ML = 30, CD = 1.0, DRAG_AREA = L * 2 * R;
+var G = 9.81, RHO = 1000;
+// Hull defaults (user-facing units: mm)
+var DEFAULT_HULL_LENGTH_MM = 300, DEFAULT_HULL_DIAMETER_MM = 50;
+var L = DEFAULT_HULL_LENGTH_MM * 1e-3, R = DEFAULT_HULL_DIAMETER_MM * 0.5e-3;
+var PBS_MAX_ML = 30, CD = 1.0;
 
-function radiusFromVolume(volumeMl) {
-  return Math.sqrt((volumeMl * 1e-6) / (Math.PI * L));
+function submergedVolume(d, r, l) {
+  if (d >= r) return Math.PI * r * r * l;
+  if (d <= -r) return 0;
+  return (r * r * Math.acos(-d / r) + d * Math.sqrt(r * r - d * d)) * l;
 }
 
-function submergedVolume(d) {
-  if (d >= R) return Math.PI * R * R * L;
-  if (d <= -R) return 0;
-  return (R * R * Math.acos(-d / R) + d * Math.sqrt(R * R - d * d)) * L;
-}
-
-function findEquilibrium(totalMass) {
-  var lo = -R, hi = R;
-  for (var i = 0; i < 200; i++) { var mid = (lo + hi) / 2; if (RHO * submergedVolume(mid) < totalMass) lo = mid; else hi = mid; }
+function findEquilibrium(totalMass, r, l) {
+  var lo = -r, hi = r;
+  for (var i = 0; i < 200; i++) { var mid = (lo + hi) / 2; if (RHO * submergedVolume(mid, r, l) < totalMass) lo = mid; else hi = mid; }
   return (lo + hi) / 2;
 }
 
@@ -349,19 +350,23 @@ class SubmarineSim {
     var deadBand = opts.deadBand !== undefined ? opts.deadBand : 0.010;
     var sensorMode = opts.sensorMode || "both";
     var accelModel = opts.accelModel || "mpu6050";
-    var hullMassG = opts.hullMassG !== undefined ? opts.hullMassG : DEFAULT_HULL_MASS_G;
-    var volumeMl = opts.volumeMl !== undefined ? opts.volumeMl : DEFAULT_VOLUME_ML;
+    var hullLengthMm = opts.hullLengthMm !== undefined ? opts.hullLengthMm : DEFAULT_HULL_LENGTH_MM;
+    var hullDiameterMm = opts.hullDiameterMm !== undefined ? opts.hullDiameterMm : DEFAULT_HULL_DIAMETER_MM;
 
     this.dt = dt; this.maxPumpRate = maxPumpRate; this._accelModelName = accelModel;
-    // User-adjustable drag parameters
-    this.hullMassG = hullMassG;
-    this.volumeMl = volumeMl;
-    this._dragArea = L * 2 * radiusFromVolume(volumeMl);
-    this._dragWeightFactor = hullMassG / DEFAULT_HULL_MASS_G;
-    // Fixed constants for buoyancy/PBS
-    this.neutralPbsMl = (RHO * Math.PI * R * R * L - HULL_MASS) * 1e3;
+    // Hull geometry (convert mm -> SI)
+    this._L = hullLengthMm * 1e-3;
+    this._R = hullDiameterMm * 0.5e-3;
+    // Drag cross-section (side projection of horizontal cylinder)
+    this._dragArea = this._L * 2 * this._R;
+    // Neutral buoyancy at mid-range of ballast tank
+    this.neutralPbsMl = PBS_MAX_ML / 2.0;
+    // Hull mass: lighter than water so that neutralPbsMl of ballast brings it to exact neutral buoyancy
+    this._M = RHO * Math.PI * this._R * this._R * this._L - this.neutralPbsMl * 1e-3;
+    // Initial conditions — slightly positively buoyant, at surface
     var initPbs = this.neutralPbsMl - 1;
-    this.time = 0; this.depth = findEquilibrium(HULL_MASS + initPbs * 1e-3);
+    var initMass = this._M + initPbs * 1e-3;
+    this.time = 0; this.depth = findEquilibrium(initMass, this._R, this._L);
     this.velocity = 0; this.pbsMl = initPbs; this.maxDepth = 0;
     this.measuredDepth = 0; this.estVelocity = 0; this.accel = 0; this.calibrating = true;
     this._depthSensor = new MS5837Sensor();
@@ -376,14 +381,14 @@ class SubmarineSim {
   set targetDepth(v) { this._pid.setPoint = v; }
   get sensorMode() { return this._velFusion.mode; }
   set sensorMode(v) { this._velFusion.mode = v; }
+  get accelModel() { return this._accelModelName; }
 
   step() {
     var dt = this.dt;
-    var totalMass = HULL_MASS + this.pbsMl * 1e-3;
-    var weight = totalMass * G;
-    var buoyancy = RHO * G * submergedVolume(this.depth);
-    var drag = 0.5 * RHO * CD * this._dragArea * this.velocity * Math.abs(this.velocity) * this._dragWeightFactor;
-    this.accel = (weight - buoyancy - drag) / totalMass;
+    var weight = (this._M + this.pbsMl * 1e-3) * G;
+    var buoyancy = RHO * G * submergedVolume(this.depth, this._R, this._L);
+    var drag = 0.5 * RHO * CD * this._dragArea * this.velocity * Math.abs(this.velocity);
+    this.accel = (weight - buoyancy - drag) / this._M;
     var result = this._depthSensor.read(this.depth, dt);
     var measDepth = result[0]; var newDepth = result[1];
     this.measuredDepth = measDepth;
@@ -406,7 +411,7 @@ class SubmarineSim {
     this._clamp(); this.time += dt;
   }
   _clamp() {
-    if (this.depth < -R) { this.depth = -R; if (this.velocity < 0) this.velocity = 0; }
+    if (this.depth < -this._R) { this.depth = -this._R; if (this.velocity < 0) this.velocity = 0; }
     if (this.depth > this.maxDepth) this.maxDepth = this.depth;
   }
 }
@@ -1161,19 +1166,20 @@ function createSim() {
   var accel = document.querySelector('input[name="accel"]:checked').value;
   var pOn = document.getElementById("chk-pressure").checked;
   var aOn = document.getElementById("chk-accel").checked;
-  var hullMassG = parseFloat(document.getElementById("weight-slider").value);
-  var volumeMl = parseFloat(document.getElementById("volume-slider").value);
+  var hullLengthMm = parseFloat(document.getElementById("length-slider").value);
+  var hullDiameterMm = parseFloat(document.getElementById("diameter-slider").value);
   var mode = "both";
   if (pOn && !aOn) mode = "pressure";
   else if (!pOn && aOn) mode = "accel";
   _gaussianRng = new GaussianRng(42);
-  sim = new SubmarineSim({ targetDepth: target, sensorMode: mode, accelModel: accel, hullMassG: hullMassG, volumeMl: volumeMl });
+  sim = new SubmarineSim({ targetDepth: target, sensorMode: mode, accelModel: accel, hullLengthMm: hullLengthMm, hullDiameterMm: hullDiameterMm });
   tBuf = []; depthBuf = []; pbsBuf = [];
   bubbles = [];
   settleChangeTime = 0; settled = false; settleTime = null;
   prevPbs = sim.pbsMl;
   animTime = 0;
   record();
+  updateMassDisplay();
 }
 
 function record() {
@@ -1316,15 +1322,19 @@ document.getElementById("chk-pressure").addEventListener("change", updateSensorM
 document.getElementById("chk-accel").addEventListener("change", updateSensorMode);
 document.querySelectorAll('input[name="accel"]').forEach(function(r) { r.addEventListener("change", function() { var wasRunning = running; resetSim(); if (wasRunning) play(); }); });
 
-document.getElementById("weight-slider").addEventListener("input", function(e) {
+function updateMassDisplay() {
+  if (sim) document.getElementById("mass-val").textContent = (sim._M * 1000).toFixed(0) + " g";
+}
+
+document.getElementById("length-slider").addEventListener("input", function(e) {
   var val = parseFloat(e.target.value);
-  document.getElementById("weight-val").textContent = val.toFixed(0) + " g";
+  document.getElementById("length-val").textContent = val.toFixed(0) + " mm";
   var wasRunning = running; resetSim(); if (wasRunning) play();
 });
 
-document.getElementById("volume-slider").addEventListener("input", function(e) {
+document.getElementById("diameter-slider").addEventListener("input", function(e) {
   var val = parseFloat(e.target.value);
-  document.getElementById("volume-val").textContent = val.toFixed(0) + " ml";
+  document.getElementById("diameter-val").textContent = val.toFixed(0) + " mm";
   var wasRunning = running; resetSim(); if (wasRunning) play();
 });
 

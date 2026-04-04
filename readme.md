@@ -9,6 +9,12 @@ python python/main.py
 # Z wyborem akcelerometru, trybu i parametrów
 python python/main.py --accel adxl355 --mode pressure --target 0.15 --time 30
 
+# Z regulacją masy kadłuba i objętości
+python python/main.py --weight 600 --volume 620
+
+# Porównanie wariantów masy/objętości (tabela wyników)
+python python/run_variants.py
+
 # Interaktywne GUI (wykresy real-time, suwak głębokości, przełączniki sensorów)
 python python/gui.py
 ```

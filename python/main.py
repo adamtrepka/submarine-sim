@@ -421,10 +421,20 @@ L = 0.30
 R = 0.025
 HULL_MASS = 0.570
 
+# Default values for user-adjustable drag parameters
+DEFAULT_HULL_MASS_G = HULL_MASS * 1000          # 570 g
+DEFAULT_VOLUME_ML = math.pi * R * R * L * 1e6   # ~589 ml
+
 PBS_MAX_ML = 30.0
 
 CD = 1.0
 DRAG_AREA = L * 2 * R
+
+
+def _radius_from_volume(volume_ml: float) -> float:
+    """Derive cylinder radius from volume (ml) and hull length."""
+    volume_m3 = volume_ml * 1e-6
+    return math.sqrt(volume_m3 / (math.pi * L))
 
 
 def submerged_volume(d: float) -> float:
@@ -470,6 +480,8 @@ class SubmarineSim:
         dead_band: float = 0.010,
         sensor_mode: str = "both",
         accel_model: str = "mpu6050",
+        hull_mass_g: float = DEFAULT_HULL_MASS_G,
+        volume_ml: float = DEFAULT_VOLUME_ML,
     ) -> None:
         if accel_model not in ACCEL_MODELS:
             raise ValueError(
@@ -479,7 +491,13 @@ class SubmarineSim:
         self.max_pump_rate = max_pump_rate
         self._accel_model_name: str = accel_model
 
-        # Neutral buoyancy
+        # User-adjustable parameters (affect drag only)
+        self.hull_mass_g: float = hull_mass_g
+        self.volume_ml: float = volume_ml
+        self._drag_area: float = L * 2 * _radius_from_volume(volume_ml)
+        self._drag_weight_factor: float = hull_mass_g / DEFAULT_HULL_MASS_G
+
+        # Neutral buoyancy (fixed constants)
         self.neutral_pbs_ml = (RHO * math.pi * R * R * L - HULL_MASS) * 1e3
 
         # Initial conditions — slightly negatively buoyant
@@ -548,11 +566,16 @@ class SubmarineSim:
         """Advance simulation by one dt step."""
         dt = self.dt
 
-        # --- Physics ---
+        # --- Physics (fixed hull constants for buoyancy/weight) ---
         total_mass = HULL_MASS + self.pbs_ml * 1e-3
         weight = total_mass * G
         buoyancy = RHO * G * submerged_volume(self.depth)
-        drag = 0.5 * RHO * CD * DRAG_AREA * self.velocity * abs(self.velocity)
+        # Drag uses user-adjustable area and weight factor
+        drag = (
+            0.5 * RHO * CD * self._drag_area
+            * self.velocity * abs(self.velocity)
+            * self._drag_weight_factor
+        )
         self.accel = (weight - buoyancy - drag) / total_mass
 
         # --- Sensor readings ---
@@ -636,12 +659,26 @@ def main() -> None:
         dest="sim_time",
         help="simulation duration in seconds (default: 60)",
     )
+    parser.add_argument(
+        "--weight",
+        type=float,
+        default=DEFAULT_HULL_MASS_G,
+        help=f"hull mass in grams for drag calculation (default: {DEFAULT_HULL_MASS_G:.0f})",
+    )
+    parser.add_argument(
+        "--volume",
+        type=float,
+        default=DEFAULT_VOLUME_ML,
+        help=f"hull volume in ml for drag calculation (default: {DEFAULT_VOLUME_ML:.1f})",
+    )
     args = parser.parse_args()
 
     sim = SubmarineSim(
         target_depth=args.target,
         accel_model=args.accel,
         sensor_mode=args.mode,
+        hull_mass_g=args.weight,
+        volume_ml=args.volume,
     )
 
     sim_time = args.sim_time
@@ -657,6 +694,10 @@ def main() -> None:
     print(
         f"Volume: {math.pi * R * R * L * 1e6:.1f}ml, "
         f"Neutral PBS: {sim.neutral_pbs_ml:.1f}ml"
+    )
+    print(
+        f"Drag params: weight={args.weight:.0f}g, volume={args.volume:.0f}ml, "
+        f"drag_area={sim._drag_area:.5f}m2"
     )
     print(f"Init: PBS={sim.pbs_ml:.1f}ml, depth={sim.depth * 1000:.1f}mm")
     print()

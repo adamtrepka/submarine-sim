@@ -3,105 +3,104 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Submarine PID Depth Control — Web Simulation</title>
+<title>Submarine Depth Control — 2D Simulator</title>
 <style>
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
   :root{
-    --bg:#1e1e2e;--panel:#181825;--grid:#3b3b54;--text:#cdd6f4;
+    --bg:#0a0e1a;--panel:#101428;--border:#1e2a4a;--text:#cdd6f4;
     --blue:#89b4fa;--orange:#fab387;--pink:#f38ba8;--green:#a6e3a1;
     --muted:#6c7086;--yellow:#f9e2af;--accent:#cba6f7;
   }
-  html{font-size:14px}
-  body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:1rem}
-  h1{font-size:1.4rem;margin-bottom:.5rem;color:var(--blue)}
-  .subtitle{font-size:.85rem;color:var(--muted);margin-bottom:1rem}
+  html,body{height:100%;overflow:hidden}
+  body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;display:flex;flex-direction:column}
 
-  .layout{display:grid;grid-template-columns:1fr;gap:.75rem;width:100%;max-width:960px}
-  .chart-box{background:var(--panel);border:1px solid var(--grid);border-radius:8px;padding:.75rem;position:relative}
-  .chart-box canvas{width:100%;height:220px;display:block}
+  #game-container{flex:1;position:relative;overflow:hidden;min-height:0}
+  #gameCanvas{display:block;width:100%;height:100%}
 
-  .controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem}
-  .ctrl-group{background:var(--panel);border:1px solid var(--grid);border-radius:8px;padding:.75rem}
-  .ctrl-group h3{font-size:.8rem;color:var(--muted);margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.5px}
+  /* HUD overlays */
+  .hud{position:absolute;pointer-events:none;font-family:'Consolas','Courier New',monospace}
+  #hud-metrics{top:10px;right:10px;background:rgba(10,14,26,0.82);border:1px solid var(--border);border-radius:8px;padding:8px 12px;font-size:12px;line-height:1.7;min-width:155px;backdrop-filter:blur(4px)}
+  #hud-metrics .row{display:flex;justify-content:space-between;gap:8px}
+  #hud-metrics .lbl{color:var(--muted);text-transform:uppercase;font-size:10px}
+  #hud-metrics .val{font-weight:700;text-align:right}
+  #hud-title{top:10px;left:50%;transform:translateX(-50%);text-align:center;font-size:15px;font-weight:700;color:rgba(200,215,255,0.7);text-shadow:0 0 12px rgba(100,150,255,0.3);letter-spacing:1px;white-space:nowrap;font-family:'Segoe UI',system-ui,sans-serif}
+  #hud-hint{bottom:10px;left:50%;transform:translateX(-50%);font-size:11px;color:rgba(200,215,255,0.35);white-space:nowrap;font-family:'Segoe UI',system-ui,sans-serif}
 
-  label{display:flex;align-items:center;gap:.4rem;cursor:pointer;font-size:.85rem;margin-bottom:.3rem}
-  input[type=range]{width:100%;accent-color:var(--blue)}
-  .val-display{font-size:1.1rem;font-weight:700;color:var(--blue);text-align:center;margin:.3rem 0}
-
-  input[type=radio],input[type=checkbox]{accent-color:var(--blue);width:16px;height:16px}
-
-  .metrics{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:.5rem;background:var(--panel);border:1px solid var(--grid);border-radius:8px;padding:.75rem}
-  .metric{text-align:center}
-  .metric .label{font-size:.7rem;color:var(--muted);text-transform:uppercase}
-  .metric .value{font-size:1rem;font-weight:700;font-family:'Consolas','Courier New',monospace}
-
-  .settle-indicator{font-size:.85rem;font-weight:700;font-family:monospace;text-align:center;padding:.3rem;border-radius:4px}
-  .settling{color:var(--yellow)}
-  .settled{color:var(--green)}
-
-  .btn-row{display:flex;gap:.5rem;justify-content:center}
-  button{background:var(--grid);color:var(--text);border:1px solid var(--muted);border-radius:6px;padding:.4rem 1rem;cursor:pointer;font-size:.85rem;transition:background .15s}
+  /* Control panel */
+  #panel{background:var(--panel);border-top:1px solid var(--border);display:flex;align-items:stretch;gap:0;flex-shrink:0;flex-wrap:wrap}
+  .p-section{padding:8px 14px;border-right:1px solid var(--border);display:flex;flex-direction:column;justify-content:center}
+  .p-section:last-child{border-right:none}
+  .p-section h3{font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin-bottom:4px}
+  .p-section label{display:flex;align-items:center;gap:4px;cursor:pointer;font-size:12px;margin-bottom:1px}
+  input[type=range]{width:140px;accent-color:var(--blue)}
+  input[type=radio],input[type=checkbox]{accent-color:var(--blue);width:13px;height:13px}
+  .val-display{font-size:13px;font-weight:700;color:var(--blue);text-align:center;margin:2px 0}
+  .btn-row{display:flex;gap:4px;align-items:center}
+  button{background:var(--border);color:var(--text);border:1px solid var(--muted);border-radius:5px;padding:4px 10px;cursor:pointer;font-size:12px;transition:background .15s}
   button:hover{background:var(--muted)}
   button.active{background:var(--blue);color:var(--bg);border-color:var(--blue)}
+  .chart-mini{background:#0d1120;border:1px solid var(--border);border-radius:4px;overflow:hidden}
+  .chart-mini canvas{display:block}
 
-  @media(max-width:640px){
-    .controls{grid-template-columns:1fr}
-    .metrics{grid-template-columns:repeat(2,1fr)}
+  @media(max-width:800px){
+    #panel{flex-direction:column}
+    .p-section{border-right:none;border-bottom:1px solid var(--border);padding:6px 10px}
+    input[type=range]{width:100%}
   }
 </style>
 </head>
 <body>
 
-<h1>&#x1F6A2; Submarine PID Depth Control</h1>
-<p class="subtitle">Web-based real-time simulation &mdash; port of the Python version</p>
+<!-- Game canvas -->
+<div id="game-container">
+  <canvas id="gameCanvas"></canvas>
 
-<div class="layout">
-  <!-- Depth chart -->
-  <div class="chart-box">
-    <canvas id="depthChart"></canvas>
+  <div class="hud" id="hud-title">&#x1F6A2; SUBMARINE DEPTH CONTROL</div>
+
+  <div class="hud" id="hud-metrics">
+    <div class="row"><span class="lbl">Time</span><span class="val" id="m-time">0.0 s</span></div>
+    <div class="row"><span class="lbl">Depth</span><span class="val" id="m-depth" style="color:var(--blue)">0.0 mm</span></div>
+    <div class="row"><span class="lbl">Target</span><span class="val" id="m-target" style="color:var(--pink)">500 mm</span></div>
+    <div class="row"><span class="lbl">PBS</span><span class="val" id="m-pbs" style="color:var(--green)">0.0 ml</span></div>
+    <div class="row"><span class="lbl">Velocity</span><span class="val" id="m-vel">0.0 mm/s</span></div>
+    <div class="row"><span class="lbl">Status</span><span class="val" id="m-settle" style="color:var(--yellow)"></span></div>
   </div>
 
-  <!-- PBS chart -->
-  <div class="chart-box">
-    <canvas id="pbsChart"></canvas>
-  </div>
+  <div class="hud" id="hud-hint">Click in water to set target depth</div>
+</div>
 
-  <!-- Live metrics -->
-  <div class="metrics">
-    <div class="metric"><div class="label">Time</div><div class="value" id="m-time">0.0 s</div></div>
-    <div class="metric"><div class="label">True Depth</div><div class="value" id="m-depth" style="color:var(--blue)">0.0 mm</div></div>
-    <div class="metric"><div class="label">Target</div><div class="value" id="m-target" style="color:var(--pink)">500 mm</div></div>
-    <div class="metric"><div class="label">PBS Fill</div><div class="value" id="m-pbs" style="color:var(--green)">0.0 ml</div></div>
-    <div class="metric"><div class="label">Velocity</div><div class="value" id="m-vel">0.0 mm/s</div></div>
-    <div class="metric"><div class="label">Status</div><div class="value settle-indicator" id="m-settle"></div></div>
+<!-- Control panel -->
+<div id="panel">
+  <div class="p-section">
+    <h3>Target Depth</h3>
+    <div class="val-display" id="slider-val">0.50 m</div>
+    <input type="range" id="target-slider" min="0" max="2" step="0.01" value="0.50">
   </div>
-
-  <!-- Controls -->
-  <div class="controls">
-    <div class="ctrl-group">
-      <h3>Target Depth</h3>
-      <div class="val-display" id="slider-val">0.50 m</div>
-      <input type="range" id="target-slider" min="0" max="2" step="0.01" value="0.50">
+  <div class="p-section">
+    <h3>Velocity Sensor</h3>
+    <label><input type="checkbox" id="chk-pressure" checked> Pressure</label>
+    <label><input type="checkbox" id="chk-accel" checked> Accelerometer</label>
+  </div>
+  <div class="p-section">
+    <h3>Accel Model</h3>
+    <label><input type="radio" name="accel" value="mpu6050" checked> MPU6050</label>
+    <label><input type="radio" name="accel" value="adxl355"> ADXL355</label>
+  </div>
+  <div class="p-section">
+    <h3>Simulation</h3>
+    <div class="btn-row">
+      <button id="btn-play" class="active">&#x25B6;</button>
+      <button id="btn-pause">&#x23F8;</button>
+      <button id="btn-reset">&#x1F504;</button>
     </div>
-
-    <div class="ctrl-group">
-      <h3>Velocity Sensor</h3>
-      <label><input type="checkbox" id="chk-pressure" checked> Pressure (depth)</label>
-      <label><input type="checkbox" id="chk-accel" checked> Accelerometer</label>
-    </div>
-
-    <div class="ctrl-group">
-      <h3>Accelerometer Model</h3>
-      <label><input type="radio" name="accel" value="mpu6050" checked> MPU6050</label>
-      <label><input type="radio" name="accel" value="adxl355"> ADXL355</label>
-    </div>
   </div>
-
-  <!-- Play/Pause/Reset -->
-  <div class="btn-row">
-    <button id="btn-pause" class="active">&#x23F8; Pause</button>
-    <button id="btn-play">&#x25B6; Play</button>
-    <button id="btn-reset">&#x1F504; Reset</button>
+  <div class="p-section">
+    <h3>Depth History</h3>
+    <div class="chart-mini"><canvas id="miniDepth" width="180" height="50"></canvas></div>
+  </div>
+  <div class="p-section">
+    <h3>PBS History</h3>
+    <div class="chart-mini"><canvas id="miniPbs" width="180" height="50"></canvas></div>
   </div>
 </div>
 
@@ -114,7 +113,7 @@
 class SeededRng {
   constructor(seed) { this._s = seed >>> 0; }
   random() {
-    let s = this._s;
+    var s = this._s;
     s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
     this._s = s >>> 0;
     return (this._s + 0.5) / 4294967296;
@@ -125,7 +124,7 @@ class GaussianRng {
   constructor(seed) { this._rng = new SeededRng(seed); this._hasSpare = false; this._spare = 0; }
   next(mean, stdDev) {
     if (this._hasSpare) { this._hasSpare = false; return mean + stdDev * this._spare; }
-    let u, v, s;
+    var u, v, s;
     do { u = this._rng.random() * 2 - 1; v = this._rng.random() * 2 - 1; s = u * u + v * v; } while (s <= 0 || s >= 1);
     s = Math.sqrt(-2 * Math.log(s) / s);
     this._spare = v * s; this._hasSpare = true;
@@ -269,7 +268,6 @@ class VelocityFusion {
       }
       return this._fusedVelocity;
     }
-    // "both" - complementary filter
     this._fusedVelocity += calibAccel * dt; this._depthAge += dt;
     if (newDepthSample) {
       if (this._firstDepth) { this._prevDepth = depth; this._firstDepth = false; }
@@ -375,136 +373,600 @@ class SubmarineSim {
 }
 
 // =========================================================================
-// Canvas Chart renderer (zero external dependencies)
+// 2D Game — Visual Engine
 // =========================================================================
-class SimpleChart {
-  constructor(canvasId, opts) {
-    this.canvas = document.getElementById(canvasId);
-    this.ctx = this.canvas.getContext("2d");
-    this.title = opts.title; this.yLabel = opts.yLabel;
-    this.yReverse = opts.yReverse || false;
-    this.series = opts.series; // [{label, color, dash?, width?, data:[{x,y}]}]
-    this._pad = { top: 32, right: 16, bottom: 32, left: 56 };
-    this._resize();
-    window.addEventListener("resize", this._resize.bind(this));
-  }
-  _resize() {
-    var rect = this.canvas.parentElement.getBoundingClientRect();
-    var dpr = window.devicePixelRatio || 1;
-    this.canvas.width = rect.width * dpr;
-    this.canvas.height = 220 * dpr;
-    this.canvas.style.width = rect.width + "px";
-    this.canvas.style.height = "220px";
-    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    this.w = rect.width; this.h = 220;
-  }
-  draw(xMin, xMax, yMin, yMax) {
-    var ctx = this.ctx; var p = this._pad;
-    var pw = this.w - p.left - p.right;
-    var ph = this.h - p.top - p.bottom;
-    ctx.clearRect(0, 0, this.w, this.h);
-    ctx.fillStyle = "#181825"; ctx.fillRect(0, 0, this.w, this.h);
+var canvas = document.getElementById("gameCanvas");
+var ctx = canvas.getContext("2d");
+var W = 0, H = 0;
 
-    // Grid
-    ctx.strokeStyle = "#3b3b54"; ctx.lineWidth = 0.5;
-    var xTicks = this._ticks(xMin, xMax, 6);
-    var yTicks = this._ticks(yMin, yMax, 5);
-    ctx.beginPath();
-    var i, xt, yt, x, y, yFrac;
-    for (i = 0; i < xTicks.length; i++) { xt = xTicks[i]; x = p.left + (xt - xMin) / (xMax - xMin) * pw; ctx.moveTo(x, p.top); ctx.lineTo(x, p.top + ph); }
-    for (i = 0; i < yTicks.length; i++) {
-      yt = yTicks[i]; yFrac = this.yReverse ? (yt - yMin) / (yMax - yMin) : 1 - (yt - yMin) / (yMax - yMin);
-      y = p.top + yFrac * ph; ctx.moveTo(p.left, y); ctx.lineTo(p.left + pw, y);
-    }
-    ctx.stroke();
+// View configuration
+var SKY_FRAC = 0.10;
+var FLOOR_FRAC = 0.05;
+var MAX_VIEW_DEPTH = 2.3;
+var skyH = 0, floorH = 0, waterH = 0;
 
-    // Axis labels
-    ctx.fillStyle = "#cdd6f4"; ctx.font = "11px 'Segoe UI', system-ui, sans-serif"; ctx.textAlign = "center";
-    for (i = 0; i < xTicks.length; i++) { xt = xTicks[i]; x = p.left + (xt - xMin) / (xMax - xMin) * pw; ctx.fillText(xt.toFixed(0), x, this.h - 6); }
-    ctx.textAlign = "right"; ctx.textBaseline = "middle";
-    for (i = 0; i < yTicks.length; i++) {
-      yt = yTicks[i]; yFrac = this.yReverse ? (yt - yMin) / (yMax - yMin) : 1 - (yt - yMin) / (yMax - yMin);
-      y = p.top + yFrac * ph; ctx.fillText(yt.toFixed(2), p.left - 6, y);
-    }
+function resizeCanvas() {
+  var container = document.getElementById("game-container");
+  var dpr = window.devicePixelRatio || 1;
+  W = container.clientWidth;
+  H = container.clientHeight;
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  skyH = Math.floor(H * SKY_FRAC);
+  floorH = Math.floor(H * FLOOR_FRAC);
+  waterH = H - skyH - floorH;
+}
 
-    // Title
-    ctx.textAlign = "center"; ctx.textBaseline = "top";
-    ctx.font = "bold 13px 'Segoe UI', system-ui, sans-serif";
-    ctx.fillText(this.title, this.w / 2, 6);
+function depthToY(d) { return skyH + (d / MAX_VIEW_DEPTH) * waterH; }
+function yToDepth(y) { return Math.max(0, Math.min(2, ((y - skyH) / waterH) * MAX_VIEW_DEPTH)); }
 
-    // Y label
-    ctx.save(); ctx.translate(12, p.top + ph / 2); ctx.rotate(-Math.PI / 2);
-    ctx.font = "11px 'Segoe UI', system-ui, sans-serif"; ctx.fillText(this.yLabel, 0, 0);
-    ctx.restore();
+// --- Particle systems ---
+var bubbles = [];
+var particles = [];
+var prevPbs = 0;
 
-    // Series
-    var s, data, j, dx, dy, sx, sy, syFrac;
-    for (i = 0; i < this.series.length; i++) {
-      s = this.series[i]; data = s.data;
-      if (data.length < 2) continue;
-      ctx.strokeStyle = s.color; ctx.lineWidth = s.width || 1.5;
-      if (s.dash) ctx.setLineDash(s.dash); else ctx.setLineDash([]);
-      ctx.beginPath();
-      for (j = 0; j < data.length; j++) {
-        dx = data[j].x; dy = data[j].y;
-        sx = p.left + (dx - xMin) / (xMax - xMin) * pw;
-        syFrac = this.yReverse ? (dy - yMin) / (yMax - yMin) : 1 - (dy - yMin) / (yMax - yMin);
-        sy = p.top + syFrac * ph;
-        if (j === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
-      }
-      ctx.stroke();
-    }
-    ctx.setLineDash([]);
-
-    // Legend
-    ctx.font = "10px 'Segoe UI', system-ui, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
-    var lx = p.left + 8;
-    for (i = 0; i < this.series.length; i++) {
-      s = this.series[i];
-      ctx.strokeStyle = s.color; ctx.lineWidth = 2;
-      if (s.dash) ctx.setLineDash(s.dash); else ctx.setLineDash([]);
-      ctx.beginPath(); ctx.moveTo(lx, p.top + 10); ctx.lineTo(lx + 16, p.top + 10); ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = "#cdd6f4";
-      ctx.fillText(s.label, lx + 20, p.top + 10);
-      lx += ctx.measureText(s.label).width + 36;
-    }
-  }
-  _ticks(min, max, count) {
-    if (max <= min) max = min + 1;
-    var step = (max - min) / count, ticks = [], i;
-    for (i = 0; i <= count; i++) ticks.push(min + i * step);
-    return ticks;
+function initParticles() {
+  particles = [];
+  for (var i = 0; i < 40; i++) {
+    particles.push({
+      x: Math.random() * 2000,
+      y: skyH + Math.random() * waterH,
+      size: 0.5 + Math.random() * 1.5,
+      speed: 2 + Math.random() * 5,
+      alpha: 0.15 + Math.random() * 0.25,
+      drift: (Math.random() - 0.5) * 0.3
+    });
   }
 }
 
+function emitBubbles(x, y, count) {
+  for (var i = 0; i < count; i++) {
+    bubbles.push({
+      x: x + (Math.random() - 0.5) * 30,
+      y: y + (Math.random() - 0.5) * 15,
+      size: 1.5 + Math.random() * 4,
+      vy: -(25 + Math.random() * 40),
+      wobble: Math.random() * Math.PI * 2,
+      wobbleSpd: 2 + Math.random() * 3,
+      alpha: 0.5 + Math.random() * 0.4,
+      life: 1
+    });
+  }
+}
+
+function updateBubbles(dt) {
+  for (var i = bubbles.length - 1; i >= 0; i--) {
+    var b = bubbles[i];
+    b.y += b.vy * dt;
+    b.x += Math.sin(b.wobble) * 0.6;
+    b.wobble += b.wobbleSpd * dt;
+    b.life -= dt * 0.4;
+    b.alpha = Math.max(0, b.life * 0.5);
+    if (b.life <= 0 || b.y < skyH - 10) { bubbles.splice(i, 1); }
+  }
+}
+
+function updateParticles(dt) {
+  for (var i = 0; i < particles.length; i++) {
+    var p = particles[i];
+    p.x -= p.speed * dt;
+    p.y += p.drift;
+    if (p.x < -10) { p.x = W + 10; p.y = skyH + Math.random() * waterH; }
+  }
+}
+
+// --- Light rays ---
+var rays = [];
+function initRays() {
+  rays = [];
+  for (var i = 0; i < 5; i++) {
+    rays.push({
+      xFrac: 0.15 + (i / 5) * 0.7,
+      width: 18 + Math.random() * 15,
+      phase: Math.random() * Math.PI * 2,
+      speed: 0.2 + Math.random() * 0.3,
+      alpha: 0.03 + Math.random() * 0.03
+    });
+  }
+}
+
+// --- Drawing functions ---
+
+function drawSky(t) {
+  var grad = ctx.createLinearGradient(0, 0, 0, skyH);
+  grad.addColorStop(0, "#4a90c4");
+  grad.addColorStop(1, "#6db3f2");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, skyH);
+
+  // Clouds
+  ctx.fillStyle = "rgba(255,255,255,0.25)";
+  for (var i = 0; i < 4; i++) {
+    var cx = ((i * 310 + t * 6) % (W + 200)) - 100;
+    var cy = 10 + i * 8;
+    var cw = 60 + i * 20;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, cw, 8 + i * 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawWaterBackground() {
+  var grad = ctx.createLinearGradient(0, skyH, 0, skyH + waterH);
+  grad.addColorStop(0, "#1a6fc4");
+  grad.addColorStop(0.3, "#0f4f8c");
+  grad.addColorStop(0.6, "#0a3566");
+  grad.addColorStop(1, "#041a33");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, skyH, W, waterH + floorH);
+}
+
+function drawWaterSurface(t) {
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, skyH);
+  for (var x = 0; x <= W; x += 3) {
+    var waveY = skyH
+      + Math.sin(x * 0.015 + t * 1.8) * 3
+      + Math.sin(x * 0.030 + t * 1.1 + 1) * 2
+      + Math.sin(x * 0.008 + t * 0.6) * 4;
+    ctx.lineTo(x, waveY);
+  }
+  ctx.lineTo(W, 0);
+  ctx.closePath();
+  var surfGrad = ctx.createLinearGradient(0, skyH - 10, 0, skyH + 10);
+  surfGrad.addColorStop(0, "#6db3f2");
+  surfGrad.addColorStop(1, "#2288dd");
+  ctx.fillStyle = surfGrad;
+  ctx.fill();
+
+  // Foam highlights
+  ctx.strokeStyle = "rgba(255,255,255,0.25)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (x = 0; x <= W; x += 3) {
+    var fy = skyH
+      + Math.sin(x * 0.015 + t * 1.8) * 3
+      + Math.sin(x * 0.030 + t * 1.1 + 1) * 2
+      + Math.sin(x * 0.008 + t * 0.6) * 4;
+    if (x === 0) ctx.moveTo(x, fy); else ctx.lineTo(x, fy);
+  }
+  ctx.stroke();
+}
+
+function drawLightRays(t) {
+  for (var i = 0; i < rays.length; i++) {
+    var r = rays[i];
+    var baseX = r.xFrac * W + Math.sin(t * r.speed + r.phase) * 35;
+    var topW = r.width;
+    var botW = topW * 2.5;
+    var depth = waterH * 0.85;
+    var alpha = r.alpha + Math.sin(t * 0.7 + r.phase) * 0.015;
+    if (alpha <= 0) continue;
+
+    var grad = ctx.createLinearGradient(0, skyH, 0, skyH + depth);
+    grad.addColorStop(0, "rgba(180,220,255," + (alpha * 1.5) + ")");
+    grad.addColorStop(1, "rgba(180,220,255,0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(baseX - topW / 2, skyH);
+    ctx.lineTo(baseX + topW / 2, skyH);
+    ctx.lineTo(baseX + botW / 2 + 30, skyH + depth);
+    ctx.lineTo(baseX - botW / 2 + 30, skyH + depth);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
+function drawSeaFloor(t) {
+  var floorY = H - floorH;
+  var grad = ctx.createLinearGradient(0, floorY, 0, H);
+  grad.addColorStop(0, "#1a3a28");
+  grad.addColorStop(0.3, "#2a4a30");
+  grad.addColorStop(1, "#1a3018");
+  ctx.fillStyle = grad;
+
+  // Undulating floor
+  ctx.beginPath();
+  ctx.moveTo(0, H);
+  for (var x = 0; x <= W; x += 4) {
+    var fy = floorY + Math.sin(x * 0.02 + 1) * 3 + Math.sin(x * 0.007) * 5;
+    ctx.lineTo(x, fy);
+  }
+  ctx.lineTo(W, H);
+  ctx.closePath();
+  ctx.fill();
+
+  // Seaweed tufts
+  ctx.strokeStyle = "#2d6b3f";
+  ctx.lineWidth = 2;
+  for (var i = 0; i < 12; i++) {
+    var sx = (i * 137 + 50) % W;
+    var baseY = floorY + Math.sin(sx * 0.02 + 1) * 3 + Math.sin(sx * 0.007) * 5;
+    var swayH = 12 + (i % 4) * 5;
+    ctx.beginPath();
+    ctx.moveTo(sx, baseY);
+    ctx.quadraticCurveTo(sx + Math.sin(t * 1.2 + i) * 6, baseY - swayH * 0.6, sx + Math.sin(t * 0.8 + i * 2) * 4, baseY - swayH);
+    ctx.stroke();
+  }
+
+  // Small rocks
+  ctx.fillStyle = "#3a5a40";
+  for (i = 0; i < 8; i++) {
+    var rx = (i * 193 + 80) % W;
+    var ry = floorY + Math.sin(rx * 0.02 + 1) * 3 + Math.sin(rx * 0.007) * 5;
+    ctx.beginPath();
+    ctx.ellipse(rx, ry, 4 + i % 3 * 2, 2 + i % 2, 0, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+function drawDepthScale() {
+  ctx.font = "10px 'Consolas','Courier New',monospace";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  var x = 30;
+  for (var d = 0; d <= 2; d += 0.5) {
+    var y = depthToY(d);
+    ctx.fillStyle = "rgba(200,220,255,0.25)";
+    ctx.fillRect(x + 2, y, 8, 1);
+    ctx.fillStyle = "rgba(200,220,255,0.35)";
+    ctx.fillText(d.toFixed(1) + "m", x, y);
+  }
+  // Minor ticks
+  for (d = 0.25; d <= 2; d += 0.5) {
+    var ty = depthToY(d);
+    ctx.fillStyle = "rgba(200,220,255,0.12)";
+    ctx.fillRect(x + 4, ty, 4, 1);
+  }
+}
+
+function drawTargetLine(targetDepth, t) {
+  var y = depthToY(targetDepth);
+  ctx.save();
+  ctx.setLineDash([8, 6]);
+  ctx.strokeStyle = "rgba(243,139,168,0.6)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(40, y);
+  ctx.lineTo(W - 10, y);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Arrow marker
+  ctx.fillStyle = "#f38ba8";
+  ctx.beginPath();
+  ctx.moveTo(40, y - 5);
+  ctx.lineTo(48, y);
+  ctx.lineTo(40, y + 5);
+  ctx.closePath();
+  ctx.fill();
+
+  // Depth label
+  ctx.font = "bold 11px 'Consolas','Courier New',monospace";
+  ctx.textAlign = "right";
+  ctx.textBaseline = "middle";
+  ctx.fillStyle = "#f38ba8";
+  ctx.fillText("TARGET " + (targetDepth * 1000).toFixed(0) + "mm", W - 14, y - 10);
+  ctx.restore();
+}
+
+// --- Submarine drawing ---
+function drawSubmarine(subX, subY, angle, pbsFill, t) {
+  ctx.save();
+  ctx.translate(subX, subY);
+  ctx.rotate(angle);
+
+  var hw = 72, hh = 18;
+
+  // Glow / underwater light around submarine
+  var glow = ctx.createRadialGradient(0, 0, 20, 0, 0, 100);
+  glow.addColorStop(0, "rgba(100,180,255,0.06)");
+  glow.addColorStop(1, "rgba(100,180,255,0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(-100, -60, 200, 120);
+
+  // Shadow
+  ctx.fillStyle = "rgba(0,0,0,0.18)";
+  ctx.beginPath();
+  ctx.ellipse(3, 4, hw, hh, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Hull body
+  var hullGrad = ctx.createLinearGradient(0, -hh, 0, hh);
+  hullGrad.addColorStop(0, "#6a6a7a");
+  hullGrad.addColorStop(0.35, "#4a4a58");
+  hullGrad.addColorStop(0.65, "#3a3a48");
+  hullGrad.addColorStop(1, "#2a2a36");
+  ctx.fillStyle = hullGrad;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, hw, hh, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = "#555568";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Hull stripe (waterline)
+  ctx.strokeStyle = "#c0392b";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, hw, hh, 0, 0.05, Math.PI - 0.05);
+  ctx.stroke();
+
+  // Conning tower (sail)
+  var sailX = -4, sailW = 22, sailH = 16;
+  var sailGrad = ctx.createLinearGradient(0, -hh - sailH, 0, -hh);
+  sailGrad.addColorStop(0, "#5a5a6a");
+  sailGrad.addColorStop(1, "#3e3e4e");
+  ctx.fillStyle = sailGrad;
+  ctx.beginPath();
+  ctx.moveTo(sailX - sailW / 2, -hh + 2);
+  ctx.lineTo(sailX - sailW / 3, -hh - sailH);
+  ctx.quadraticCurveTo(sailX, -hh - sailH - 3, sailX + sailW / 3, -hh - sailH);
+  ctx.lineTo(sailX + sailW / 2, -hh + 2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.strokeStyle = "#555568";
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  // Sail viewport window
+  ctx.fillStyle = "rgba(130,210,255,0.5)";
+  ctx.beginPath();
+  ctx.roundRect(sailX - 4, -hh - sailH + 3, 8, 5, 1);
+  ctx.fill();
+
+  // Periscope
+  ctx.strokeStyle = "#555";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(sailX + 6, -hh - sailH);
+  ctx.lineTo(sailX + 6, -hh - sailH - 8);
+  ctx.lineTo(sailX + 9, -hh - sailH - 8);
+  ctx.stroke();
+
+  // Bow planes (front fins)
+  ctx.fillStyle = "#444454";
+  ctx.beginPath();
+  ctx.moveTo(hw - 18, -hh + 2);
+  ctx.lineTo(hw - 12, -hh - 7);
+  ctx.lineTo(hw - 6, -hh + 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(hw - 18, hh - 2);
+  ctx.lineTo(hw - 12, hh + 7);
+  ctx.lineTo(hw - 6, hh - 2);
+  ctx.fill();
+
+  // Stern planes & rudder
+  ctx.beginPath();
+  ctx.moveTo(-hw + 6, -hh + 2);
+  ctx.lineTo(-hw + 2, -hh - 9);
+  ctx.lineTo(-hw + 16, -hh + 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(-hw + 6, hh - 2);
+  ctx.lineTo(-hw + 2, hh + 9);
+  ctx.lineTo(-hw + 16, hh - 2);
+  ctx.fill();
+
+  // Propeller
+  var propX = -hw - 6;
+  var propAngle = t * 12;
+  ctx.strokeStyle = "#777";
+  ctx.lineWidth = 2;
+  for (var b = 0; b < 4; b++) {
+    var ba = propAngle + b * Math.PI / 2;
+    ctx.beginPath();
+    ctx.moveTo(propX, 0);
+    ctx.lineTo(propX + Math.cos(ba) * 2, Math.sin(ba) * 10);
+    ctx.stroke();
+  }
+  ctx.fillStyle = "#555";
+  ctx.beginPath();
+  ctx.arc(propX, 0, 2.5, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Portholes
+  var portPositions = [-40, -20, 0, 20, 40];
+  for (var pi = 0; pi < portPositions.length; pi++) {
+    var px = portPositions[pi];
+    // Interior glow
+    ctx.fillStyle = "rgba(255,230,130,0.2)";
+    ctx.beginPath();
+    ctx.arc(px, 0, 6, 0, Math.PI * 2);
+    ctx.fill();
+    // Glass
+    ctx.fillStyle = "rgba(255,225,120,0.65)";
+    ctx.beginPath();
+    ctx.arc(px, 0, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+    // Frame
+    ctx.strokeStyle = "#666";
+    ctx.lineWidth = 1.2;
+    ctx.beginPath();
+    ctx.arc(px, 0, 4.5, 0, Math.PI * 2);
+    ctx.stroke();
+  }
+
+  // Navigation lights
+  ctx.fillStyle = "#ff3333";
+  ctx.beginPath();
+  ctx.arc(hw - 3, -3, 1.8, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#33ff33";
+  ctx.beginPath();
+  ctx.arc(hw - 3, 3, 1.8, 0, Math.PI * 2);
+  ctx.fill();
+
+  // PBS indicator on hull (small gauge on the side)
+  var gaugeX = 55, gaugeY = -8, gaugeW = 8, gaugeH = 16;
+  ctx.fillStyle = "rgba(0,0,0,0.4)";
+  ctx.fillRect(gaugeX - 1, gaugeY - 1, gaugeW + 2, gaugeH + 2);
+  var fillFrac = pbsFill / PBS_MAX_ML;
+  var fillColor = Math.abs(fillFrac - 0.63) < 0.07 ? "#a6e3a1" : fillFrac > 0.63 ? "#89b4fa" : "#f9e2af";
+  ctx.fillStyle = "#1a1a2e";
+  ctx.fillRect(gaugeX, gaugeY, gaugeW, gaugeH);
+  ctx.fillStyle = fillColor;
+  ctx.fillRect(gaugeX, gaugeY + gaugeH * (1 - fillFrac), gaugeW, gaugeH * fillFrac);
+
+  ctx.restore();
+}
+
+function drawBubblesAll() {
+  for (var i = 0; i < bubbles.length; i++) {
+    var b = bubbles[i];
+    if (b.alpha <= 0) continue;
+    ctx.globalAlpha = b.alpha;
+    ctx.strokeStyle = "rgba(180,220,255,0.7)";
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.arc(b.x, b.y, b.size, 0, Math.PI * 2);
+    ctx.stroke();
+    // Highlight
+    ctx.fillStyle = "rgba(255,255,255,0.35)";
+    ctx.beginPath();
+    ctx.arc(b.x - b.size * 0.3, b.y - b.size * 0.3, b.size * 0.25, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawParticlesAll() {
+  for (var i = 0; i < particles.length; i++) {
+    var p = particles[i];
+    ctx.fillStyle = "rgba(180,210,240," + p.alpha + ")";
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// --- PBS Gauge (HUD overlay on canvas) ---
+function drawPBSGauge(pbsMl, neutralMl) {
+  var gx = 12, gy = skyH + 20, gw = 18, gh = waterH * 0.35;
+  var maxH = gh;
+
+  // Background
+  ctx.fillStyle = "rgba(10,14,26,0.75)";
+  ctx.strokeStyle = "rgba(100,130,180,0.3)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(gx - 4, gy - 18, gw + 8, gh + 34, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  // Title
+  ctx.fillStyle = "rgba(200,220,255,0.6)";
+  ctx.font = "bold 8px 'Consolas',monospace";
+  ctx.textAlign = "center";
+  ctx.fillText("PBS", gx + gw / 2, gy - 8);
+
+  // Tank outline
+  ctx.strokeStyle = "rgba(150,170,200,0.4)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(gx, gy, gw, gh);
+
+  // Fill
+  var frac = pbsMl / PBS_MAX_ML;
+  var fillH = frac * gh;
+  var neutralFrac = neutralMl / PBS_MAX_ML;
+
+  var fillGrad = ctx.createLinearGradient(0, gy + gh, 0, gy);
+  fillGrad.addColorStop(0, "rgba(60,140,220,0.8)");
+  fillGrad.addColorStop(1, "rgba(100,180,255,0.6)");
+  ctx.fillStyle = fillGrad;
+  ctx.fillRect(gx, gy + gh - fillH, gw, fillH);
+
+  // Neutral line
+  var ny = gy + gh - neutralFrac * gh;
+  ctx.strokeStyle = "rgba(166,227,161,0.6)";
+  ctx.setLineDash([3, 2]);
+  ctx.beginPath();
+  ctx.moveTo(gx - 2, ny);
+  ctx.lineTo(gx + gw + 2, ny);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Value label
+  ctx.fillStyle = "#cdd6f4";
+  ctx.font = "9px 'Consolas',monospace";
+  ctx.textAlign = "center";
+  ctx.fillText(pbsMl.toFixed(1), gx + gw / 2, gy + gh + 12);
+  ctx.fillStyle = "rgba(200,220,255,0.4)";
+  ctx.fillText("ml", gx + gw / 2, gy + gh + 22);
+}
+
+// --- Caustic light pattern on sea floor ---
+function drawCaustics(t) {
+  var floorY = H - floorH;
+  ctx.globalAlpha = 0.04;
+  ctx.fillStyle = "#88ccff";
+  for (var x = 0; x < W; x += 12) {
+    var intensity = (Math.sin(x * 0.05 + t * 2.3) + Math.sin(x * 0.08 + t * 1.7 + 2)) * 0.5 + 0.5;
+    if (intensity > 0.6) {
+      ctx.globalAlpha = (intensity - 0.6) * 0.08;
+      ctx.fillRect(x, floorY - 8, 10, 12);
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
 // =========================================================================
-// UI setup
+// Mini Charts (sparklines in the control panel)
 // =========================================================================
-var WINDOW_SEC = 30, SIM_SPEED = 10, FPS = 30, DT = 0.001;
+function drawMiniChart(canvasId, data, color, yMin, yMax, refLine, refColor) {
+  var c = document.getElementById(canvasId);
+  var cx = c.getContext("2d");
+  var cw = c.width, ch = c.height;
+  cx.clearRect(0, 0, cw, ch);
+  cx.fillStyle = "#0d1120";
+  cx.fillRect(0, 0, cw, ch);
+
+  if (data.length < 2) return;
+  var range = yMax - yMin;
+  if (range <= 0) range = 1;
+
+  // Reference line
+  if (refLine !== undefined) {
+    var ry = ch - ((refLine - yMin) / range) * ch;
+    cx.strokeStyle = refColor || "rgba(108,112,134,0.5)";
+    cx.setLineDash([3, 3]);
+    cx.lineWidth = 1;
+    cx.beginPath();
+    cx.moveTo(0, ry);
+    cx.lineTo(cw, ry);
+    cx.stroke();
+    cx.setLineDash([]);
+  }
+
+  cx.strokeStyle = color;
+  cx.lineWidth = 1.5;
+  cx.beginPath();
+  for (var i = 0; i < data.length; i++) {
+    var x = (i / (data.length - 1)) * cw;
+    var y = ch - ((data[i] - yMin) / range) * ch;
+    if (i === 0) cx.moveTo(x, y); else cx.lineTo(x, y);
+  }
+  cx.stroke();
+}
+
+// =========================================================================
+// UI Setup & Game Loop
+// =========================================================================
+var SIM_SPEED = 10, FPS = 30, DT = 0.001;
 var STEPS_PER_FRAME = Math.floor(SIM_SPEED / (FPS * DT));
-var MAX_POINTS = 600;
-
-var depthChart = new SimpleChart("depthChart", {
-  title: "Depth vs Time", yLabel: "Depth (m)", yReverse: true,
-  series: [
-    { label: "True depth", color: "#89b4fa", data: [] },
-    { label: "Measured", color: "#fab387", data: [], width: 1 },
-    { label: "Target", color: "#f38ba8", data: [], dash: [6, 3] },
-  ],
-});
-var pbsChart = new SimpleChart("pbsChart", {
-  title: "PBS Fill vs Time", yLabel: "PBS (ml)",
-  series: [
-    { label: "PBS fill", color: "#a6e3a1", data: [] },
-    { label: "Neutral", color: "#6c7086", data: [], dash: [6, 3] },
-  ],
-});
-
-var sim = null, running = false;
-var tBuf = [], depthTrueBuf = [], depthMeasBuf = [], pbsBuf = [];
-var settleChangeTime = 0, settled = false, settleTime = null;
+var MAX_POINTS = 300;
 var TOLERANCE_M = 0.010;
+
+var sim = null, running = false, animId = null;
+var tBuf = [], depthBuf = [], pbsBuf = [];
+var settleChangeTime = 0, settled = false, settleTime = null;
+var animTime = 0;
+var lastFrameTime = 0;
 
 function createSim() {
   var target = parseFloat(document.getElementById("target-slider").value);
@@ -514,84 +976,146 @@ function createSim() {
   var mode = "both";
   if (pOn && !aOn) mode = "pressure";
   else if (!pOn && aOn) mode = "accel";
+  _gaussianRng = new GaussianRng(42);
   sim = new SubmarineSim({ targetDepth: target, sensorMode: mode, accelModel: accel });
-  tBuf = []; depthTrueBuf = []; depthMeasBuf = []; pbsBuf = [];
+  tBuf = []; depthBuf = []; pbsBuf = [];
+  bubbles = [];
   settleChangeTime = 0; settled = false; settleTime = null;
+  prevPbs = sim.pbsMl;
+  animTime = 0;
   record();
 }
 
 function record() {
   tBuf.push(sim.time);
-  depthTrueBuf.push(sim.depth);
-  depthMeasBuf.push(sim.measuredDepth);
+  depthBuf.push(sim.depth);
   pbsBuf.push(sim.pbsMl);
   if (tBuf.length > MAX_POINTS) {
     var excess = tBuf.length - MAX_POINTS;
-    tBuf.splice(0, excess); depthTrueBuf.splice(0, excess);
-    depthMeasBuf.splice(0, excess); pbsBuf.splice(0, excess);
+    tBuf.splice(0, excess); depthBuf.splice(0, excess); pbsBuf.splice(0, excess);
   }
 }
 
-function updateCharts() {
-  var t = tBuf;
-  var tMin = t.length > 0 ? Math.max(0, t[t.length - 1] - WINDOW_SEC) : 0;
-  var tMax = t.length > 0 ? t[t.length - 1] + 1 : 1;
-
-  // Depth chart
-  depthChart.series[0].data = t.map(function(x, i) { return { x: x, y: depthTrueBuf[i] }; });
-  depthChart.series[1].data = t.map(function(x, i) { return { x: x, y: depthMeasBuf[i] }; });
-  depthChart.series[2].data = [{ x: tMin, y: sim.targetDepth }, { x: tMax, y: sim.targetDepth }];
-  var dMin = sim.targetDepth, dMax = sim.targetDepth;
-  for (var i = 0; i < t.length; i++) {
-    if (t[i] >= tMin) {
-      if (depthTrueBuf[i] < dMin) dMin = depthTrueBuf[i];
-      if (depthTrueBuf[i] > dMax) dMax = depthTrueBuf[i];
-    }
-  }
-  depthChart.draw(tMin, tMax, dMin - 0.05, dMax + 0.05);
-
-  // PBS chart
-  pbsChart.series[0].data = t.map(function(x, i) { return { x: x, y: pbsBuf[i] }; });
-  pbsChart.series[1].data = [{ x: tMin, y: sim.neutralPbsMl }, { x: tMax, y: sim.neutralPbsMl }];
-  var pMin = sim.neutralPbsMl, pMax = sim.neutralPbsMl;
-  for (i = 0; i < t.length; i++) {
-    if (t[i] >= tMin) {
-      if (pbsBuf[i] < pMin) pMin = pbsBuf[i];
-      if (pbsBuf[i] > pMax) pMax = pbsBuf[i];
-    }
-  }
-  pbsChart.draw(tMin, tMax, Math.max(0, pMin - 1), Math.min(30, pMax + 1));
-
-  // Metrics
+function updateHUD() {
   document.getElementById("m-time").textContent = sim.time.toFixed(1) + " s";
   document.getElementById("m-depth").textContent = (sim.depth * 1000).toFixed(1) + " mm";
   document.getElementById("m-target").textContent = (sim.targetDepth * 1000).toFixed(0) + " mm";
   document.getElementById("m-pbs").textContent = sim.pbsMl.toFixed(1) + " ml";
   document.getElementById("m-vel").textContent = (sim.velocity * 1000).toFixed(1) + " mm/s";
 
-  // Settle
   var depthError = Math.abs(sim.depth - sim.targetDepth);
   if (!settled && depthError <= TOLERANCE_M) { settled = true; settleTime = sim.time - settleChangeTime; }
   var el = document.getElementById("m-settle");
-  if (settleTime !== null) { el.textContent = "Settle: " + settleTime.toFixed(1) + "s"; el.className = "value settle-indicator settled"; }
-  else if (settleChangeTime > 0 || sim.time > 0.1) { el.textContent = "Settling... " + (sim.time - settleChangeTime).toFixed(1) + "s"; el.className = "value settle-indicator settling"; }
+  if (settleTime !== null) { el.textContent = "\u2713 " + settleTime.toFixed(1) + "s"; el.style.color = "var(--green)"; }
+  else if (settleChangeTime > 0 || sim.time > 0.1) { el.textContent = "\u23F3 " + (sim.time - settleChangeTime).toFixed(1) + "s"; el.style.color = "var(--yellow)"; }
   else el.textContent = "";
 }
 
-// Animation loop
-var animId = null;
-function loop() {
+function renderFrame(t) {
+  resizeCanvas();
+  var realDt = lastFrameTime > 0 ? Math.min((t - lastFrameTime) / 1000, 0.1) : 0.033;
+  lastFrameTime = t;
+  animTime += realDt;
+
+  // Update visual particles
+  updateBubbles(realDt);
+  updateParticles(realDt);
+
+  // Emit bubbles from PBS pump activity
+  var pbsDelta = Math.abs(sim.pbsMl - prevPbs);
+  if (pbsDelta > 0.01) {
+    var subX = W * 0.38;
+    var subY = depthToY(sim.depth);
+    emitBubbles(subX - 60, subY + 10, Math.ceil(pbsDelta * 3));
+  }
+  prevPbs = sim.pbsMl;
+
+  // Also emit ambient bubbles occasionally
+  if (Math.random() < 0.03) {
+    emitBubbles(Math.random() * W, skyH + Math.random() * waterH * 0.8, 1);
+  }
+
+  // --- Render scene ---
+  ctx.clearRect(0, 0, W, H);
+
+  drawWaterBackground();
+  drawLightRays(animTime);
+  drawCaustics(animTime);
+  drawSeaFloor(animTime);
+  drawParticlesAll();
+
+  // Target depth line
+  if (sim) drawTargetLine(sim.targetDepth, animTime);
+
+  // Depth scale
+  drawDepthScale();
+
+  // Submarine
+  if (sim) {
+    var subX = W * 0.38;
+    var subY = depthToY(sim.depth);
+    var tilt = Math.max(-0.22, Math.min(0.22, sim.velocity * 4));
+    drawSubmarine(subX, subY, tilt, sim.pbsMl, animTime);
+  }
+
+  drawBubblesAll();
+
+  // Water surface (drawn on top so it overlays everything above water)
+  drawSky(animTime);
+  drawWaterSurface(animTime);
+
+  // PBS Gauge
+  if (sim) drawPBSGauge(sim.pbsMl, sim.neutralPbsMl);
+}
+
+function loop(timestamp) {
   if (!running) return;
   for (var i = 0; i < STEPS_PER_FRAME; i++) sim.step();
   record();
-  updateCharts();
+  renderFrame(timestamp || performance.now());
+  updateHUD();
+
+  // Mini charts
+  var dMin = 0, dMax = Math.max(0.1, sim.targetDepth + 0.1);
+  for (var j = 0; j < depthBuf.length; j++) {
+    if (depthBuf[j] > dMax) dMax = depthBuf[j];
+  }
+  drawMiniChart("miniDepth", depthBuf, "#89b4fa", dMin - 0.02, dMax + 0.02, sim.targetDepth, "rgba(243,139,168,0.5)");
+
+  var pMin = sim.neutralPbsMl - 2, pMax = sim.neutralPbsMl + 2;
+  for (j = 0; j < pbsBuf.length; j++) {
+    if (pbsBuf[j] < pMin) pMin = pbsBuf[j];
+    if (pbsBuf[j] > pMax) pMax = pbsBuf[j];
+  }
+  drawMiniChart("miniPbs", pbsBuf, "#a6e3a1", pMin - 0.5, pMax + 0.5, sim.neutralPbsMl, "rgba(108,112,134,0.4)");
+
   animId = requestAnimationFrame(loop);
 }
 
-function play()  { running = true; document.getElementById("btn-play").classList.add("active"); document.getElementById("btn-pause").classList.remove("active"); loop(); }
-function pause() { running = false; document.getElementById("btn-pause").classList.add("active"); document.getElementById("btn-play").classList.remove("active"); if (animId) cancelAnimationFrame(animId); }
-function resetSim() { pause(); createSim(); updateCharts(); }
+function play() {
+  running = true;
+  document.getElementById("btn-play").classList.add("active");
+  document.getElementById("btn-pause").classList.remove("active");
+  lastFrameTime = 0;
+  loop(performance.now());
+}
+function pause() {
+  running = false;
+  document.getElementById("btn-pause").classList.add("active");
+  document.getElementById("btn-play").classList.remove("active");
+  if (animId) cancelAnimationFrame(animId);
+}
+function resetSim() {
+  pause();
+  createSim();
+  lastFrameTime = 0;
+  renderFrame(performance.now());
+  updateHUD();
+  drawMiniChart("miniDepth", depthBuf, "#89b4fa", -0.02, 0.6);
+  drawMiniChart("miniPbs", pbsBuf, "#a6e3a1", sim.neutralPbsMl - 2, sim.neutralPbsMl + 2, sim.neutralPbsMl);
+}
 
+// --- Event handlers ---
 document.getElementById("btn-play").addEventListener("click", play);
 document.getElementById("btn-pause").addEventListener("click", pause);
 document.getElementById("btn-reset").addEventListener("click", resetSim);
@@ -610,10 +1134,33 @@ function updateSensorMode() {
 }
 document.getElementById("chk-pressure").addEventListener("change", updateSensorMode);
 document.getElementById("chk-accel").addEventListener("change", updateSensorMode);
-document.querySelectorAll('input[name="accel"]').forEach(function(r) { r.addEventListener("change", function() { resetSim(); }); });
+document.querySelectorAll('input[name="accel"]').forEach(function(r) { r.addEventListener("change", function() { resetSim(); play(); }); });
 
-// Init & auto-play
-createSim(); updateCharts(); play();
+// Click-to-set-target
+canvas.addEventListener("click", function(e) {
+  var rect = canvas.getBoundingClientRect();
+  var y = e.clientY - rect.top;
+  if (y < skyH) return;
+  var depth = yToDepth(y);
+  depth = Math.round(depth * 100) / 100;
+  depth = Math.max(0, Math.min(2, depth));
+  document.getElementById("target-slider").value = depth;
+  document.getElementById("slider-val").textContent = depth.toFixed(2) + " m";
+  if (sim) { sim.targetDepth = depth; settleChangeTime = sim.time; settled = false; settleTime = null; }
+});
+
+window.addEventListener("resize", function() {
+  if (!running && sim) { renderFrame(performance.now()); }
+});
+
+// --- Initialize ---
+resizeCanvas();
+initParticles();
+initRays();
+createSim();
+renderFrame(performance.now());
+updateHUD();
+play();
 </script>
 </body>
 </html>

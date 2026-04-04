@@ -1,22 +1,74 @@
-# CI check for pull requests — validates web deployment artifact and runs simulation
-name: CI
+# Unified CI/CD pipeline
+#   - PR → master:  conditional checks (python/web based on changed files)
+#   - push/dispatch: full checks + screenshots + deploy to GitHub Pages
+name: CI/CD
 
 on:
   pull_request:
-    branches: [main]
+    branches: [master]
+  push:
+    branches: [master]
+  workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: read
+  contents: write
+  pages: write
+  id-token: write
 
+concurrency:
+  group: "pages-${{ github.ref }}"
+  cancel-in-progress: true
+
+# ──────────────────────────────────────────────────────────────────────────────
 jobs:
-  build:
+
+  # ── Detect which parts of the repo changed (PR only) ─────────────────────
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      web: ${{ steps.filter.outputs.web }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            python:
+              - 'python/**'
+            web:
+              - 'web/**'
+
+  # ── Python check ─────────────────────────────────────────────────────────
+  check-python:
+    needs: detect-changes
+    if: >-
+      needs.detect-changes.outputs.python == 'true'
+      || github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Validate web directory exists
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run simulation variants
+        working-directory: python
+        run: python run_variants.py
+
+  # ── Web check ────────────────────────────────────────────────────────────
+  check-web:
+    needs: detect-changes
+    if: >-
+      needs.detect-changes.outputs.web == 'true'
+      || github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate web/index.html exists
         run: |
           if [ ! -f web/index.html ]; then
             echo "::error::web/index.html not found"
@@ -26,33 +78,83 @@ jobs:
 
       - name: Validate HTML structure
         run: |
-          # Check for required HTML elements
           grep -q '<!DOCTYPE html>' web/index.html || { echo "::error::Missing DOCTYPE"; exit 1; }
-          grep -q '<html' web/index.html || { echo "::error::Missing <html> tag"; exit 1; }
-          grep -q '</html>' web/index.html || { echo "::error::Missing </html> tag"; exit 1; }
-          grep -q '<head>' web/index.html || { echo "::error::Missing <head> tag"; exit 1; }
-          grep -q '<body>' web/index.html || { echo "::error::Missing <body> tag"; exit 1; }
+          grep -q '<html' web/index.html            || { echo "::error::Missing <html> tag"; exit 1; }
+          grep -q '</html>' web/index.html           || { echo "::error::Missing </html> tag"; exit 1; }
+          grep -q '<head>' web/index.html            || { echo "::error::Missing <head> tag"; exit 1; }
+          grep -q '<body>' web/index.html            || { echo "::error::Missing <body> tag"; exit 1; }
           echo "HTML structure is valid"
 
-      - name: Setup Pages
-        uses: actions/configure-pages@v5
-
-      - name: Build Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: web
-
-  simulate:
+  # ── Screenshots (push/dispatch only) ─────────────────────────────────────
+  screenshots:
+    needs: [check-python, check-web]
+    if: >-
+      always()
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
+      && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      # --- GUI screenshot (matplotlib headless) ---
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Run simulation variants
+      - name: Install matplotlib
+        run: pip install matplotlib
+
+      - name: Generate GUI screenshot
         working-directory: python
-        run: python run_variants.py
+        run: python generate_screenshot.py
+
+      # --- Web screenshot (Playwright) ---
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Generate web screenshot
+        run: node .github/scripts/screenshot-web.js
+
+      # --- Commit updated screenshots ---
+      - name: Commit screenshots
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add assets/gui.png assets/web.png
+          if git diff --staged --quiet; then
+            echo "No screenshot changes to commit"
+          else
+            git commit -m "chore: update screenshots [skip ci]"
+            git push
+          fi
+
+  # ── Deploy to GitHub Pages (push/dispatch only) ──────────────────────────
+  deploy:
+    needs: [check-web, screenshots]
+    if: >-
+      always()
+      && (needs.check-web.result == 'success' || needs.check-web.result == 'skipped')
+      && !contains(needs.*.result, 'failure')
+      && !contains(needs.*.result, 'cancelled')
+      && github.event_name != 'pull_request'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: web
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

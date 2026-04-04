@@ -19,7 +19,9 @@ Wymagania: Python 3.10+, `matplotlib` z backendem Qt5 (tylko dla GUI).
 
 Symulacja dostępna jako statyczna strona w przeglądarce — port implementacji Python do JavaScript z wizualizacją na HTML5 Canvas, bez zewnętrznych zależności.
 
-Otwórz `web/index.html` w przeglądarce lub odwiedź wdrożoną wersję na GitHub Pages.
+Otwórz `web/index.html` w przeglądarce lub odwiedź wdrożoną wersję:
+
+**👉 https://adamtrepka.github.io/submarine-sim/**
 
 ![Submarine PID Depth Control — Web](assets/web.png)
 

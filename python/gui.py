@@ -16,9 +16,14 @@ matplotlib.use("Qt5Agg")
 
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
-from matplotlib.widgets import Slider, CheckButtons, RadioButtons
+from matplotlib.widgets import Slider, CheckButtons, RadioButtons, TextBox
 
-from main import SubmarineSim, ACCEL_MODELS
+from main import (
+    SubmarineSim,
+    ACCEL_MODELS,
+    DEFAULT_HULL_LENGTH_MM,
+    DEFAULT_HULL_DIAMETER_MM,
+)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -53,8 +58,17 @@ class SimRunner:
         self,
         target_depth: float = DEPTH_SLIDER_INIT,
         accel_model: str = "mpu6050",
+        hull_length_mm: float = DEFAULT_HULL_LENGTH_MM,
+        hull_diameter_mm: float = DEFAULT_HULL_DIAMETER_MM,
     ) -> None:
-        self.sim = SubmarineSim(target_depth=target_depth, accel_model=accel_model)
+        self.hull_length_mm = hull_length_mm
+        self.hull_diameter_mm = hull_diameter_mm
+        self.sim = SubmarineSim(
+            target_depth=target_depth,
+            accel_model=accel_model,
+            hull_length_mm=hull_length_mm,
+            hull_diameter_mm=hull_diameter_mm,
+        )
 
         # Ring buffers for plotting
         self.t_buf: deque[float] = deque(maxlen=_BUF_LEN)
@@ -76,6 +90,8 @@ class SimRunner:
             target_depth=target_depth,
             accel_model=accel_model,
             sensor_mode=sensor_mode,
+            hull_length_mm=self.hull_length_mm,
+            hull_diameter_mm=self.hull_diameter_mm,
         )
         self.t_buf.clear()
         self.depth_true.clear()
@@ -101,10 +117,10 @@ def build_gui() -> None:
     fig = plt.figure("Submarine PID Depth Control", figsize=(12, 7))
     fig.patch.set_facecolor("#1e1e2e")
 
-    # GridSpec: 2 chart rows + 1 controls row (slider + checkboxes + accel model)
+    # GridSpec: 2 chart rows + hull params row + controls row
     gs = fig.add_gridspec(
-        3, 3,
-        height_ratios=[3, 2, 0.6],
+        4, 3,
+        height_ratios=[3, 2, 0.5, 0.6],
         width_ratios=[3, 1, 1],
         hspace=0.35,
         left=0.08, right=0.96,
@@ -113,9 +129,12 @@ def build_gui() -> None:
 
     ax_depth = fig.add_subplot(gs[0, :])
     ax_pbs = fig.add_subplot(gs[1, :], sharex=ax_depth)
-    ax_slider = fig.add_subplot(gs[2, 0])
-    ax_check = fig.add_subplot(gs[2, 1])
-    ax_accel = fig.add_subplot(gs[2, 2])
+    ax_hull_len = fig.add_subplot(gs[2, 0])
+    ax_hull_dia = fig.add_subplot(gs[2, 1])
+    ax_hull_mass = fig.add_subplot(gs[2, 2])
+    ax_slider = fig.add_subplot(gs[3, 0])
+    ax_check = fig.add_subplot(gs[3, 1])
+    ax_accel = fig.add_subplot(gs[3, 2])
 
     # --- Styling helper ---
     _GRID_COLOR = "#3b3b54"
@@ -153,6 +172,69 @@ def build_gui() -> None:
     ax_pbs.set_title("PBS Fill vs Time")
     ax_pbs.legend(loc="upper right", fontsize=8, facecolor=_PANEL, edgecolor=_GRID_COLOR, labelcolor=_TEXT_COLOR)
     ax_pbs.set_ylim(0, 30)
+
+    # --- Settle-time tracking ---
+    _TOLERANCE_M = 0.010  # ±10 mm
+
+    class _SettleState:
+        """Mutable state for settle-time measurement."""
+        t_change: float = 0.0        # sim time of last slider change
+        settled: bool = False         # True once depth entered tolerance band
+        settle_time: float | None = None  # seconds from change to settled
+
+    _settle = _SettleState()
+
+    # --- Hull parameter text boxes ---
+    _tb_props = dict(color=_PANEL, hovercolor="#2a2a3e")
+
+    ax_hull_len.set_facecolor(_PANEL)
+    ax_hull_len.set_title("Długość (mm)", fontsize=8, color=_TEXT_COLOR, pad=4)
+    tb_length = TextBox(ax_hull_len, "", initial=str(int(DEFAULT_HULL_LENGTH_MM)), **_tb_props)
+    tb_length.label.set_color(_TEXT_COLOR)
+    tb_length.text_disp.set_color(_TEXT_COLOR)
+
+    ax_hull_dia.set_facecolor(_PANEL)
+    ax_hull_dia.set_title("Średnica (mm)", fontsize=8, color=_TEXT_COLOR, pad=4)
+    tb_diameter = TextBox(ax_hull_dia, "", initial=str(int(DEFAULT_HULL_DIAMETER_MM)), **_tb_props)
+    tb_diameter.label.set_color(_TEXT_COLOR)
+    tb_diameter.text_disp.set_color(_TEXT_COLOR)
+
+    ax_hull_mass.set_facecolor(_PANEL)
+    ax_hull_mass.set_title("Masa (wyliczona)", fontsize=8, color=_TEXT_COLOR, pad=4)
+    ax_hull_mass.set_xticks([])
+    ax_hull_mass.set_yticks([])
+    for spine in ax_hull_mass.spines.values():
+        spine.set_color(_GRID_COLOR)
+    mass_label = ax_hull_mass.text(
+        0.5, 0.5, f"{runner.sim._M * 1000:.0f} g",
+        transform=ax_hull_mass.transAxes,
+        ha="center", va="center",
+        fontsize=12, color=_TEXT_COLOR, fontfamily="monospace",
+    )
+
+    def _apply_hull_params(_text: str = "") -> None:
+        """Parse hull text boxes and reset simulation if values are valid."""
+        try:
+            length = float(tb_length.text)
+            diameter = float(tb_diameter.text)
+        except ValueError:
+            return
+        if length <= 0 or diameter <= 0:
+            return
+        runner.hull_length_mm = length
+        runner.hull_diameter_mm = diameter
+        runner.reset(
+            target_depth=runner.sim.target_depth,
+            accel_model=runner.sim.accel_model,
+            sensor_mode=runner.sim.sensor_mode,
+        )
+        mass_label.set_text(f"{runner.sim._M * 1000:.0f} g")
+        _settle.t_change = 0.0
+        _settle.settled = False
+        _settle.settle_time = None
+
+    tb_length.on_submit(_apply_hull_params)
+    tb_diameter.on_submit(_apply_hull_params)
 
     # --- Slider ---
     ax_slider.set_facecolor(_PANEL)
@@ -244,17 +326,6 @@ def build_gui() -> None:
         fontsize=8, color=_TEXT_COLOR, verticalalignment="bottom",
         fontfamily="monospace",
     )
-
-    # --- Settle-time tracking ---
-    _TOLERANCE_M = 0.010  # ±10 mm
-
-    class _SettleState:
-        """Mutable state for settle-time measurement."""
-        t_change: float = 0.0        # sim time of last slider change
-        settled: bool = False         # True once depth entered tolerance band
-        settle_time: float | None = None  # seconds from change to settled
-
-    _settle = _SettleState()
 
     settle_text = ax_depth.text(
         0.99, 0.02, "", transform=ax_depth.transAxes,

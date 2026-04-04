@@ -15,7 +15,15 @@ python python/gui.py
 
 Wymagania: Python 3.10+, `matplotlib` z backendem Qt5 (tylko dla GUI).
 
-### GUI
+### Wersja webowa (GitHub Pages)
+
+Symulacja dostępna jako statyczna strona w przeglądarce — port implementacji Python do JavaScript z wizualizacją na HTML5 Canvas, bez zewnętrznych zależności.
+
+Otwórz `web/index.html` w przeglądarce lub odwiedź wdrożoną wersję na GitHub Pages.
+
+![Submarine PID Depth Control — Web](assets/web.png)
+
+### GUI (Python)
 
 ![Submarine PID Depth Control — GUI](assets/gui.png)
 
@@ -272,7 +280,7 @@ Po uruchomieniu GUI widoczne ciągłe oscylacje PBS. Przyczyna: szum prędkości
 ## Struktura projektu
 
 ```
-C:\Dev\demo\
+submarine-sim/
 ├── dotnet/                 # Oryginalna implementacja C#
 │   ├── Program.cs          # ~495 linii — cała symulacja w jednym pliku
 │   ├── Demo.csproj         # .NET 10.0 console app
@@ -281,6 +289,12 @@ C:\Dev\demo\
 ├── python/                 # Port na Python + GUI
 │   ├── main.py             # ~727 linii — symulacja + klasa SubmarineSim + CLI
 │   └── gui.py              # ~354 linii — wizualizacja matplotlib (Qt5Agg)
+│
+├── web/                    # Wersja webowa (GitHub Pages)
+│   └── index.html          # Samodzielna strona HTML/CSS/JS — port symulacji Python
+│
+├── .github/workflows/
+│   └── deploy-pages.yml    # GitHub Actions — deploy na GitHub Pages
 │
 └── readme.md               # Ten plik
 ```

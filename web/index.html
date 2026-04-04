@@ -807,7 +807,8 @@ function drawSubmarine(subX, subY, angle, pbsFill, t) {
   ctx.fillStyle = "rgba(0,0,0,0.4)";
   ctx.fillRect(gaugeX - 1, gaugeY - 1, gaugeW + 2, gaugeH + 2);
   var fillFrac = pbsFill / PBS_MAX_ML;
-  var fillColor = Math.abs(fillFrac - 0.63) < 0.07 ? "#a6e3a1" : fillFrac > 0.63 ? "#89b4fa" : "#f9e2af";
+  var neutralFrac = sim ? sim.neutralPbsMl / PBS_MAX_ML : 0.63;
+  var fillColor = Math.abs(fillFrac - neutralFrac) < 0.07 ? "#a6e3a1" : fillFrac > neutralFrac ? "#89b4fa" : "#f9e2af";
   ctx.fillStyle = "#1a1a2e";
   ctx.fillRect(gaugeX, gaugeY, gaugeW, gaugeH);
   ctx.fillStyle = fillColor;
@@ -1134,7 +1135,7 @@ function updateSensorMode() {
 }
 document.getElementById("chk-pressure").addEventListener("change", updateSensorMode);
 document.getElementById("chk-accel").addEventListener("change", updateSensorMode);
-document.querySelectorAll('input[name="accel"]').forEach(function(r) { r.addEventListener("change", function() { resetSim(); play(); }); });
+document.querySelectorAll('input[name="accel"]').forEach(function(r) { r.addEventListener("change", function() { var wasRunning = running; resetSim(); if (wasRunning) play(); }); });
 
 // Click-to-set-target
 canvas.addEventListener("click", function(e) {

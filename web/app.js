@@ -563,10 +563,11 @@ function drawTargetLine(targetDepth, t) {
 }
 
 // --- Submarine drawing ---
-function drawSubmarine(subX, subY, angle, pbsFill, t) {
+function drawSubmarine(subX, subY, angle, pbsFill, t, scaleX, scaleY) {
   ctx.save();
   ctx.translate(subX, subY);
   ctx.rotate(angle);
+  ctx.scale(scaleX || 1, scaleY || 1);
 
   var hw = 72, hh = 18;
 
@@ -1081,16 +1082,17 @@ function renderFrame(t) {
   updateBubbles(realDt);
   updateParticles(realDt);
 
-  // Emit bubbles from PBS pump activity
+  // Emit bubbles from PBS pump activity (only when submerged)
   var pbsDelta = Math.abs(sim.pbsMl - prevPbs);
-  if (pbsDelta > 0.01) {
+  if (pbsDelta > 0.01 && sim.depth > 0) {
     var subX = W * 0.38;
     var subY = depthToY(sim.depth);
-    emitBubbles(subX - 60, subY + 10, Math.ceil(pbsDelta * 3));
+    var bubbleScaleX = sim._L / (DEFAULT_HULL_LENGTH_MM * 1e-3);
+    emitBubbles(subX - 60 * bubbleScaleX, subY + 10, Math.ceil(pbsDelta * 3));
   }
   prevPbs = sim.pbsMl;
 
-  // Also emit ambient bubbles occasionally
+  // Also emit ambient bubbles occasionally (only underwater)
   if (Math.random() < 0.03) {
     emitBubbles(Math.random() * W, skyH + Math.random() * waterH * 0.8, 1);
   }
@@ -1115,7 +1117,9 @@ function renderFrame(t) {
     var subX = W * 0.38;
     var subY = depthToY(sim.depth);
     var tilt = Math.max(-0.22, Math.min(0.22, sim.velocity * 4));
-    drawSubmarine(subX, subY, tilt, sim.pbsMl, animTime);
+    var scaleX = sim._L / (DEFAULT_HULL_LENGTH_MM * 1e-3);
+    var scaleY = (2 * sim._R) / (DEFAULT_HULL_DIAMETER_MM * 1e-3);
+    drawSubmarine(subX, subY, tilt, sim.pbsMl, animTime, scaleX, scaleY);
   }
 
   drawBubblesAll();

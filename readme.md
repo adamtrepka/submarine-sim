@@ -289,20 +289,17 @@ Po uruchomieniu GUI widoczne ciągłe oscylacje PBS. Przyczyna: szum prędkości
 
 ```
 submarine-sim/
-├── dotnet/                 # Oryginalna implementacja C#
-│   ├── Program.cs          # ~495 linii — cała symulacja w jednym pliku
-│   ├── Demo.csproj         # .NET 10.0 console app
-│   └── Demo.sln            # Solution file
-│
 ├── python/                 # Port na Python + GUI
 │   ├── main.py             # ~727 linii — symulacja + klasa SubmarineSim + CLI
-│   └── gui.py              # ~354 linii — wizualizacja matplotlib (Qt5Agg)
+│   ├── gui.py              # ~354 linii — wizualizacja matplotlib (Qt5Agg)
+│   └── run_variants.py     # Porównanie wariantów masy/objętości (tabela wyników)
 │
 ├── web/                    # Wersja webowa (GitHub Pages)
 │   └── index.html          # Samodzielna strona HTML/CSS/JS — port symulacji Python
 │
 ├── .github/workflows/
-│   └── deploy-pages.yml    # GitHub Actions — deploy na GitHub Pages
+│   ├── deploy-pages.yml    # GitHub Actions — deploy na GitHub Pages
+│   └── ci.yml              # CI — walidacja web + symulacja wariantów (PRs)
 │
 └── readme.md               # Ten plik
 ```
@@ -324,6 +321,8 @@ python main.py -h                                  # pomoc
 | `--mode` | `both`, `pressure`, `accel` | `both` | Tryb fuzji prędkości |
 | `--target` | float | `0.5` | Docelowa głębokość (m) |
 | `--time` | float | `60` | Czas symulacji (s) |
+| `--weight` | float | `570` | Masa kadłuba (g) — wpływa na opór hydrodynamiczny |
+| `--volume` | float | `589` | Objętość kadłuba (ml) — wpływa na opór hydrodynamiczny |
 
 ## Historia commitów
 
@@ -335,6 +334,13 @@ python main.py -h                                  # pomoc
 | `f4ba7d5` | `fix: suppress PBS oscillations with 10mm dead band and add settle-time indicator` |
 | `f5476e5` | `feat: add sensor mode selection (pressure, accelerometer, or both)` |
 | `cb4519c` | `feat: add CLI arguments for sensor mode, accelerometer model, target depth and sim time` |
+| `d49c2f4` | `feat: add web-based submarine simulation for GitHub Pages` |
+| `5777e68` | `feat: transform web version into 2D game with submarine visualization and visual effects` |
+| `67f0b57` | `feat: add CI workflow to validate web deployment on pull requests` |
+| `bae2850` | `feat: remove dotnet code, add weight/volume regulation to Python and web` |
+| `ff83738` | `feat: add CI simulation variants stage with run_variants.py` |
+| `c96245d` | `feat: redesign web UI — two-column layout with graph axes and autoscale` |
+| `8ca613f` | `fix: add cache-control meta tags to prevent iOS Safari stale caching` |
 
 ---
 

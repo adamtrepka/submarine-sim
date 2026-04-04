@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Submarine PID Depth Control — Web Simulation</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg:#1e1e2e;--panel:#181825;--grid:#3b3b54;--text:#cdd6f4;
+    --blue:#89b4fa;--orange:#fab387;--pink:#f38ba8;--green:#a6e3a1;
+    --muted:#6c7086;--yellow:#f9e2af;--accent:#cba6f7;
+  }
+  html{font-size:14px}
+  body{background:var(--bg);color:var(--text);font-family:'Segoe UI',system-ui,sans-serif;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:1rem}
+  h1{font-size:1.4rem;margin-bottom:.5rem;color:var(--blue)}
+  .subtitle{font-size:.85rem;color:var(--muted);margin-bottom:1rem}
+
+  .layout{display:grid;grid-template-columns:1fr;gap:.75rem;width:100%;max-width:960px}
+  .chart-box{background:var(--panel);border:1px solid var(--grid);border-radius:8px;padding:.75rem;position:relative}
+  .chart-box canvas{width:100%;height:220px;display:block}
+
+  .controls{display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem}
+  .ctrl-group{background:var(--panel);border:1px solid var(--grid);border-radius:8px;padding:.75rem}
+  .ctrl-group h3{font-size:.8rem;color:var(--muted);margin-bottom:.5rem;text-transform:uppercase;letter-spacing:.5px}
+
+  label{display:flex;align-items:center;gap:.4rem;cursor:pointer;font-size:.85rem;margin-bottom:.3rem}
+  input[type=range]{width:100%;accent-color:var(--blue)}
+  .val-display{font-size:1.1rem;font-weight:700;color:var(--blue);text-align:center;margin:.3rem 0}
+
+  input[type=radio],input[type=checkbox]{accent-color:var(--blue);width:16px;height:16px}
+
+  .metrics{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:.5rem;background:var(--panel);border:1px solid var(--grid);border-radius:8px;padding:.75rem}
+  .metric{text-align:center}
+  .metric .label{font-size:.7rem;color:var(--muted);text-transform:uppercase}
+  .metric .value{font-size:1rem;font-weight:700;font-family:'Consolas','Courier New',monospace}
+
+  .settle-indicator{font-size:.85rem;font-weight:700;font-family:monospace;text-align:center;padding:.3rem;border-radius:4px}
+  .settling{color:var(--yellow)}
+  .settled{color:var(--green)}
+
+  .btn-row{display:flex;gap:.5rem;justify-content:center}
+  button{background:var(--grid);color:var(--text);border:1px solid var(--muted);border-radius:6px;padding:.4rem 1rem;cursor:pointer;font-size:.85rem;transition:background .15s}
+  button:hover{background:var(--muted)}
+  button.active{background:var(--blue);color:var(--bg);border-color:var(--blue)}
+
+  @media(max-width:640px){
+    .controls{grid-template-columns:1fr}
+    .metrics{grid-template-columns:repeat(2,1fr)}
+  }
+</style>
+</head>
+<body>
+
+<h1>&#x1F6A2; Submarine PID Depth Control</h1>
+<p class="subtitle">Web-based real-time simulation &mdash; port of the Python version</p>
+
+<div class="layout">
+  <!-- Depth chart -->
+  <div class="chart-box">
+    <canvas id="depthChart"></canvas>
+  </div>
+
+  <!-- PBS chart -->
+  <div class="chart-box">
+    <canvas id="pbsChart"></canvas>
+  </div>
+
+  <!-- Live metrics -->
+  <div class="metrics">
+    <div class="metric"><div class="label">Time</div><div class="value" id="m-time">0.0 s</div></div>
+    <div class="metric"><div class="label">True Depth</div><div class="value" id="m-depth" style="color:var(--blue)">0.0 mm</div></div>
+    <div class="metric"><div class="label">Target</div><div class="value" id="m-target" style="color:var(--pink)">500 mm</div></div>
+    <div class="metric"><div class="label">PBS Fill</div><div class="value" id="m-pbs" style="color:var(--green)">0.0 ml</div></div>
+    <div class="metric"><div class="label">Velocity</div><div class="value" id="m-vel">0.0 mm/s</div></div>
+    <div class="metric"><div class="label">Status</div><div class="value settle-indicator" id="m-settle"></div></div>
+  </div>
+
+  <!-- Controls -->
+  <div class="controls">
+    <div class="ctrl-group">
+      <h3>Target Depth</h3>
+      <div class="val-display" id="slider-val">0.50 m</div>
+      <input type="range" id="target-slider" min="0" max="2" step="0.01" value="0.50">
+    </div>
+
+    <div class="ctrl-group">
+      <h3>Velocity Sensor</h3>
+      <label><input type="checkbox" id="chk-pressure" checked> Pressure (depth)</label>
+      <label><input type="checkbox" id="chk-accel" checked> Accelerometer</label>
+    </div>
+
+    <div class="ctrl-group">
+      <h3>Accelerometer Model</h3>
+      <label><input type="radio" name="accel" value="mpu6050" checked> MPU6050</label>
+      <label><input type="radio" name="accel" value="adxl355"> ADXL355</label>
+    </div>
+  </div>
+
+  <!-- Play/Pause/Reset -->
+  <div class="btn-row">
+    <button id="btn-pause" class="active">&#x23F8; Pause</button>
+    <button id="btn-play">&#x25B6; Play</button>
+    <button id="btn-reset">&#x1F504; Reset</button>
+  </div>
+</div>
+
+<script>
+"use strict";
+
+// =========================================================================
+// Gaussian RNG (Box-Muller with xorshift32 seeded PRNG)
+// =========================================================================
+class SeededRng {
+  constructor(seed) { this._s = seed >>> 0; }
+  random() {
+    let s = this._s;
+    s ^= s << 13; s ^= s >>> 17; s ^= s << 5;
+    this._s = s >>> 0;
+    return (this._s + 0.5) / 4294967296;
+  }
+}
+
+class GaussianRng {
+  constructor(seed) { this._rng = new SeededRng(seed); this._hasSpare = false; this._spare = 0; }
+  next(mean, stdDev) {
+    if (this._hasSpare) { this._hasSpare = false; return mean + stdDev * this._spare; }
+    let u, v, s;
+    do { u = this._rng.random() * 2 - 1; v = this._rng.random() * 2 - 1; s = u * u + v * v; } while (s <= 0 || s >= 1);
+    s = Math.sqrt(-2 * Math.log(s) / s);
+    this._spare = v * s; this._hasSpare = true;
+    return mean + stdDev * u * s;
+  }
+}
+
+var _gaussianRng = new GaussianRng(42);
+
+// =========================================================================
+// MS5837-30BA Pressure / Depth Sensor
+// =========================================================================
+class MS5837Sensor {
+  constructor() {
+    this.samplePeriod = 0.020;
+    this.depthResolution = 0.016 / 98.1;
+    this._noiseSigma = 0.016 / 98.1;
+    this._bias = (2.0 * (2 * new SeededRng(123).random() - 1)) / 98.1;
+    this._lastReading = 0; this._timeSinceLast = this.samplePeriod; this._newSample = false;
+  }
+  get biasM() { return this._bias; }
+  read(trueDepth, dt) {
+    this._timeSinceLast += dt; this._newSample = false;
+    if (this._timeSinceLast >= this.samplePeriod) {
+      this._timeSinceLast = 0; this._newSample = true;
+      var noisy = trueDepth + this._bias + _gaussianRng.next(0, this._noiseSigma);
+      this._lastReading = Math.round(noisy / this.depthResolution) * this.depthResolution;
+    }
+    return [this._lastReading, this._newSample];
+  }
+}
+
+// =========================================================================
+// Accelerometer Models
+// =========================================================================
+var G_MPS2 = 9.80665;
+
+class MPU6050Accel {
+  constructor() {
+    this._lsbMps2 = G_MPS2 / 16384;
+    this._noiseSigma = 400e-6 * Math.sqrt(6.5) * G_MPS2;
+    this._bias = (50 * (2 * new SeededRng(456).random() - 1)) * 1e-3 * G_MPS2;
+    this.samplePeriod = 0.005; this._lastReading = 0; this._timeSinceLast = this.samplePeriod;
+  }
+  get biasMps2() { return this._bias; }
+  get noiseSigma() { return this._noiseSigma; }
+  read(trueAccel, dt) {
+    this._timeSinceLast += dt;
+    if (this._timeSinceLast >= this.samplePeriod) {
+      this._timeSinceLast = 0;
+      var noisy = trueAccel + this._bias + _gaussianRng.next(0, this._noiseSigma);
+      this._lastReading = Math.round(noisy / this._lsbMps2) * this._lsbMps2;
+    }
+    return this._lastReading;
+  }
+}
+
+class ADXL355Accel {
+  constructor() {
+    this._lsbMps2 = G_MPS2 / 256000;
+    this._noiseSigma = 25e-6 * Math.sqrt(6.5) * G_MPS2;
+    this._bias = (10 * (2 * new SeededRng(789).random() - 1)) * 1e-3 * G_MPS2;
+    this.samplePeriod = 0.005; this._lastReading = 0; this._timeSinceLast = this.samplePeriod;
+  }
+  get biasMps2() { return this._bias; }
+  get noiseSigma() { return this._noiseSigma; }
+  read(trueAccel, dt) {
+    this._timeSinceLast += dt;
+    if (this._timeSinceLast >= this.samplePeriod) {
+      this._timeSinceLast = 0;
+      var noisy = trueAccel + this._bias + _gaussianRng.next(0, this._noiseSigma);
+      this._lastReading = Math.round(noisy / this._lsbMps2) * this._lsbMps2;
+    }
+    return this._lastReading;
+  }
+}
+
+var ACCEL_MODELS = { mpu6050: MPU6050Accel, adxl355: ADXL355Accel };
+
+// =========================================================================
+// PID Controller
+// =========================================================================
+class PidController {
+  constructor(kp, ki, kd, setPoint, outMin, outMax, deadBand) {
+    this.kp = kp; this.ki = ki; this.kd = kd;
+    this.setPoint = setPoint;
+    this.outMin = outMin !== undefined ? outMin : -Infinity;
+    this.outMax = outMax !== undefined ? outMax : Infinity;
+    this.deadBand = deadBand || 0;
+    this._integral = 0;
+  }
+  update(pv, velocity, dt) {
+    var error = this.setPoint - pv;
+    if (Math.abs(error) <= this.deadBand) { this._integral *= 0.99; return 0; }
+    var pTerm = this.kp * error;
+    var dTerm = -this.kd * velocity;
+    var candidateI = this._integral + error * dt;
+    var candidateOut = pTerm + this.ki * candidateI + dTerm;
+    if (candidateOut >= this.outMin && candidateOut <= this.outMax) this._integral = candidateI;
+    else if (error * this._integral < 0) this._integral = candidateI;
+    return Math.max(this.outMin, Math.min(this.outMax, pTerm + this.ki * this._integral + dTerm));
+  }
+  reset() { this._integral = 0; }
+}
+
+// =========================================================================
+// Accelerometer Bias Calibrator
+// =========================================================================
+class AccelCalibrator {
+  constructor(calibTimeSec, samplePeriod) {
+    this._required = Math.max(1, Math.floor(calibTimeSec / samplePeriod));
+    this._sum = 0; this._count = 0; this._estimatedBias = 0; this._done = false;
+  }
+  addSample(raw) {
+    if (this._done) return true;
+    this._sum += raw; this._count++;
+    if (this._count >= this._required) { this._estimatedBias = this._sum / this._count; this._done = true; }
+    return this._done;
+  }
+  get estimatedBias() { return this._estimatedBias; }
+  get isDone() { return this._done; }
+}
+
+// =========================================================================
+// Complementary Filter Velocity Estimator
+// =========================================================================
+class VelocityFusion {
+  constructor(tau, mode) {
+    this._tau = tau || 0.5; this.mode = mode || "both";
+    this._fusedVelocity = 0; this._prevDepth = 0; this._depthAge = 0; this._firstDepth = true;
+  }
+  update(calibAccel, depth, newDepthSample, dt) {
+    var mode = this.mode;
+    if (mode === "accel") { this._fusedVelocity += calibAccel * dt; return this._fusedVelocity; }
+    if (mode === "pressure") {
+      this._depthAge += dt;
+      if (newDepthSample) {
+        if (this._firstDepth) { this._prevDepth = depth; this._firstDepth = false; }
+        else if (this._depthAge > 1e-9) { this._fusedVelocity = (depth - this._prevDepth) / this._depthAge; this._prevDepth = depth; }
+        this._depthAge = 0;
+      }
+      return this._fusedVelocity;
+    }
+    // "both" - complementary filter
+    this._fusedVelocity += calibAccel * dt; this._depthAge += dt;
+    if (newDepthSample) {
+      if (this._firstDepth) { this._prevDepth = depth; this._firstDepth = false; }
+      else if (this._depthAge > 1e-9) {
+        var vDepth = (depth - this._prevDepth) / this._depthAge; this._prevDepth = depth;
+        var beta = this._depthAge / (this._tau + this._depthAge);
+        this._fusedVelocity = (1 - beta) * this._fusedVelocity + beta * vDepth;
+      }
+      this._depthAge = 0;
+    }
+    return this._fusedVelocity;
+  }
+  get velocity() { return this._fusedVelocity; }
+}
+
+// =========================================================================
+// Submarine Physics
+// =========================================================================
+var G = 9.81, RHO = 1000, L = 0.30, R = 0.025, HULL_MASS = 0.570;
+var PBS_MAX_ML = 30, CD = 1.0, DRAG_AREA = L * 2 * R;
+
+function submergedVolume(d) {
+  if (d >= R) return Math.PI * R * R * L;
+  if (d <= -R) return 0;
+  return (R * R * Math.acos(-d / R) + d * Math.sqrt(R * R - d * d)) * L;
+}
+
+function findEquilibrium(totalMass) {
+  var lo = -R, hi = R;
+  for (var i = 0; i < 200; i++) { var mid = (lo + hi) / 2; if (RHO * submergedVolume(mid) < totalMass) lo = mid; else hi = mid; }
+  return (lo + hi) / 2;
+}
+
+// =========================================================================
+// SubmarineSim
+// =========================================================================
+class SubmarineSim {
+  constructor(opts) {
+    opts = opts || {};
+    var targetDepth = opts.targetDepth !== undefined ? opts.targetDepth : 0.5;
+    var dt = opts.dt || 0.001;
+    var calibTimeSec = opts.calibTimeSec !== undefined ? opts.calibTimeSec : 0.5;
+    var fusionTau = opts.fusionTau !== undefined ? opts.fusionTau : 0.5;
+    var maxPumpRate = opts.maxPumpRate !== undefined ? opts.maxPumpRate : 1.5;
+    var kp = opts.kp !== undefined ? opts.kp : 10;
+    var ki = opts.ki !== undefined ? opts.ki : 0.1;
+    var kd = opts.kd !== undefined ? opts.kd : 80;
+    var deadBand = opts.deadBand !== undefined ? opts.deadBand : 0.010;
+    var sensorMode = opts.sensorMode || "both";
+    var accelModel = opts.accelModel || "mpu6050";
+
+    this.dt = dt; this.maxPumpRate = maxPumpRate; this._accelModelName = accelModel;
+    this.neutralPbsMl = (RHO * Math.PI * R * R * L - HULL_MASS) * 1e3;
+    var initPbs = this.neutralPbsMl - 1;
+    this.time = 0; this.depth = findEquilibrium(HULL_MASS + initPbs * 1e-3);
+    this.velocity = 0; this.pbsMl = initPbs; this.maxDepth = 0;
+    this.measuredDepth = 0; this.estVelocity = 0; this.accel = 0; this.calibrating = true;
+    this._depthSensor = new MS5837Sensor();
+    var AccelCls = ACCEL_MODELS[accelModel] || MPU6050Accel;
+    this._accelSensor = new AccelCls();
+    this._accelCalib = new AccelCalibrator(calibTimeSec, this._accelSensor.samplePeriod);
+    this._velFusion = new VelocityFusion(fusionTau, sensorMode);
+    this._pid = new PidController(kp, ki, kd, targetDepth, -this.neutralPbsMl, PBS_MAX_ML - this.neutralPbsMl, deadBand);
+    this._prevRawAccel = NaN;
+  }
+  get targetDepth() { return this._pid.setPoint; }
+  set targetDepth(v) { this._pid.setPoint = v; }
+  get sensorMode() { return this._velFusion.mode; }
+  set sensorMode(v) { this._velFusion.mode = v; }
+
+  step() {
+    var dt = this.dt;
+    var totalMass = HULL_MASS + this.pbsMl * 1e-3;
+    var weight = totalMass * G;
+    var buoyancy = RHO * G * submergedVolume(this.depth);
+    var drag = 0.5 * RHO * CD * DRAG_AREA * this.velocity * Math.abs(this.velocity);
+    this.accel = (weight - buoyancy - drag) / totalMass;
+    var result = this._depthSensor.read(this.depth, dt);
+    var measDepth = result[0]; var newDepth = result[1];
+    this.measuredDepth = measDepth;
+    var rawAccel = this._accelSensor.read(this.accel, dt);
+    var newAccelSample = rawAccel !== this._prevRawAccel; this._prevRawAccel = rawAccel;
+    if (!this._accelCalib.isDone) {
+      if (newAccelSample) this._accelCalib.addSample(rawAccel);
+      this.velocity += this.accel * dt; this.depth += this.velocity * dt;
+      this._clamp(); this.calibrating = !this._accelCalib.isDone; this.time += dt; return;
+    }
+    this.calibrating = false;
+    var calibAccel = rawAccel - this._accelCalib.estimatedBias;
+    this.estVelocity = this._velFusion.update(calibAccel, this.measuredDepth, newDepth, dt);
+    var correction = this._pid.update(this.measuredDepth, this.estVelocity, dt);
+    var targetPbs = Math.max(0, Math.min(PBS_MAX_ML, this.neutralPbsMl + correction));
+    var maxChange = this.maxPumpRate * dt;
+    this.pbsMl += Math.max(-maxChange, Math.min(maxChange, targetPbs - this.pbsMl));
+    this.pbsMl = Math.max(0, Math.min(PBS_MAX_ML, this.pbsMl));
+    this.velocity += this.accel * dt; this.depth += this.velocity * dt;
+    this._clamp(); this.time += dt;
+  }
+  _clamp() {
+    if (this.depth < -R) { this.depth = -R; if (this.velocity < 0) this.velocity = 0; }
+    if (this.depth > this.maxDepth) this.maxDepth = this.depth;
+  }
+}
+
+// =========================================================================
+// Canvas Chart renderer (zero external dependencies)
+// =========================================================================
+class SimpleChart {
+  constructor(canvasId, opts) {
+    this.canvas = document.getElementById(canvasId);
+    this.ctx = this.canvas.getContext("2d");
+    this.title = opts.title; this.yLabel = opts.yLabel;
+    this.yReverse = opts.yReverse || false;
+    this.series = opts.series; // [{label, color, dash?, width?, data:[{x,y}]}]
+    this._pad = { top: 32, right: 16, bottom: 32, left: 56 };
+    this._resize();
+    window.addEventListener("resize", this._resize.bind(this));
+  }
+  _resize() {
+    var rect = this.canvas.parentElement.getBoundingClientRect();
+    var dpr = window.devicePixelRatio || 1;
+    this.canvas.width = rect.width * dpr;
+    this.canvas.height = 220 * dpr;
+    this.canvas.style.width = rect.width + "px";
+    this.canvas.style.height = "220px";
+    this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    this.w = rect.width; this.h = 220;
+  }
+  draw(xMin, xMax, yMin, yMax) {
+    var ctx = this.ctx; var p = this._pad;
+    var pw = this.w - p.left - p.right;
+    var ph = this.h - p.top - p.bottom;
+    ctx.clearRect(0, 0, this.w, this.h);
+    ctx.fillStyle = "#181825"; ctx.fillRect(0, 0, this.w, this.h);
+
+    // Grid
+    ctx.strokeStyle = "#3b3b54"; ctx.lineWidth = 0.5;
+    var xTicks = this._ticks(xMin, xMax, 6);
+    var yTicks = this._ticks(yMin, yMax, 5);
+    ctx.beginPath();
+    var i, xt, yt, x, y, yFrac;
+    for (i = 0; i < xTicks.length; i++) { xt = xTicks[i]; x = p.left + (xt - xMin) / (xMax - xMin) * pw; ctx.moveTo(x, p.top); ctx.lineTo(x, p.top + ph); }
+    for (i = 0; i < yTicks.length; i++) {
+      yt = yTicks[i]; yFrac = this.yReverse ? (yt - yMin) / (yMax - yMin) : 1 - (yt - yMin) / (yMax - yMin);
+      y = p.top + yFrac * ph; ctx.moveTo(p.left, y); ctx.lineTo(p.left + pw, y);
+    }
+    ctx.stroke();
+
+    // Axis labels
+    ctx.fillStyle = "#cdd6f4"; ctx.font = "11px 'Segoe UI', system-ui, sans-serif"; ctx.textAlign = "center";
+    for (i = 0; i < xTicks.length; i++) { xt = xTicks[i]; x = p.left + (xt - xMin) / (xMax - xMin) * pw; ctx.fillText(xt.toFixed(0), x, this.h - 6); }
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    for (i = 0; i < yTicks.length; i++) {
+      yt = yTicks[i]; yFrac = this.yReverse ? (yt - yMin) / (yMax - yMin) : 1 - (yt - yMin) / (yMax - yMin);
+      y = p.top + yFrac * ph; ctx.fillText(yt.toFixed(2), p.left - 6, y);
+    }
+
+    // Title
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    ctx.font = "bold 13px 'Segoe UI', system-ui, sans-serif";
+    ctx.fillText(this.title, this.w / 2, 6);
+
+    // Y label
+    ctx.save(); ctx.translate(12, p.top + ph / 2); ctx.rotate(-Math.PI / 2);
+    ctx.font = "11px 'Segoe UI', system-ui, sans-serif"; ctx.fillText(this.yLabel, 0, 0);
+    ctx.restore();
+
+    // Series
+    var s, data, j, dx, dy, sx, sy, syFrac;
+    for (i = 0; i < this.series.length; i++) {
+      s = this.series[i]; data = s.data;
+      if (data.length < 2) continue;
+      ctx.strokeStyle = s.color; ctx.lineWidth = s.width || 1.5;
+      if (s.dash) ctx.setLineDash(s.dash); else ctx.setLineDash([]);
+      ctx.beginPath();
+      for (j = 0; j < data.length; j++) {
+        dx = data[j].x; dy = data[j].y;
+        sx = p.left + (dx - xMin) / (xMax - xMin) * pw;
+        syFrac = this.yReverse ? (dy - yMin) / (yMax - yMin) : 1 - (dy - yMin) / (yMax - yMin);
+        sy = p.top + syFrac * ph;
+        if (j === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
+      }
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+
+    // Legend
+    ctx.font = "10px 'Segoe UI', system-ui, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+    var lx = p.left + 8;
+    for (i = 0; i < this.series.length; i++) {
+      s = this.series[i];
+      ctx.strokeStyle = s.color; ctx.lineWidth = 2;
+      if (s.dash) ctx.setLineDash(s.dash); else ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(lx, p.top + 10); ctx.lineTo(lx + 16, p.top + 10); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#cdd6f4";
+      ctx.fillText(s.label, lx + 20, p.top + 10);
+      lx += ctx.measureText(s.label).width + 36;
+    }
+  }
+  _ticks(min, max, count) {
+    if (max <= min) max = min + 1;
+    var step = (max - min) / count, ticks = [], i;
+    for (i = 0; i <= count; i++) ticks.push(min + i * step);
+    return ticks;
+  }
+}
+
+// =========================================================================
+// UI setup
+// =========================================================================
+var WINDOW_SEC = 30, SIM_SPEED = 10, FPS = 30, DT = 0.001;
+var STEPS_PER_FRAME = Math.floor(SIM_SPEED / (FPS * DT));
+var MAX_POINTS = 600;
+
+var depthChart = new SimpleChart("depthChart", {
+  title: "Depth vs Time", yLabel: "Depth (m)", yReverse: true,
+  series: [
+    { label: "True depth", color: "#89b4fa", data: [] },
+    { label: "Measured", color: "#fab387", data: [], width: 1 },
+    { label: "Target", color: "#f38ba8", data: [], dash: [6, 3] },
+  ],
+});
+var pbsChart = new SimpleChart("pbsChart", {
+  title: "PBS Fill vs Time", yLabel: "PBS (ml)",
+  series: [
+    { label: "PBS fill", color: "#a6e3a1", data: [] },
+    { label: "Neutral", color: "#6c7086", data: [], dash: [6, 3] },
+  ],
+});
+
+var sim = null, running = false;
+var tBuf = [], depthTrueBuf = [], depthMeasBuf = [], pbsBuf = [];
+var settleChangeTime = 0, settled = false, settleTime = null;
+var TOLERANCE_M = 0.010;
+
+function createSim() {
+  var target = parseFloat(document.getElementById("target-slider").value);
+  var accel = document.querySelector('input[name="accel"]:checked').value;
+  var pOn = document.getElementById("chk-pressure").checked;
+  var aOn = document.getElementById("chk-accel").checked;
+  var mode = "both";
+  if (pOn && !aOn) mode = "pressure";
+  else if (!pOn && aOn) mode = "accel";
+  sim = new SubmarineSim({ targetDepth: target, sensorMode: mode, accelModel: accel });
+  tBuf = []; depthTrueBuf = []; depthMeasBuf = []; pbsBuf = [];
+  settleChangeTime = 0; settled = false; settleTime = null;
+  record();
+}
+
+function record() {
+  tBuf.push(sim.time);
+  depthTrueBuf.push(sim.depth);
+  depthMeasBuf.push(sim.measuredDepth);
+  pbsBuf.push(sim.pbsMl);
+  if (tBuf.length > MAX_POINTS) {
+    var excess = tBuf.length - MAX_POINTS;
+    tBuf.splice(0, excess); depthTrueBuf.splice(0, excess);
+    depthMeasBuf.splice(0, excess); pbsBuf.splice(0, excess);
+  }
+}
+
+function updateCharts() {
+  var t = tBuf;
+  var tMin = t.length > 0 ? Math.max(0, t[t.length - 1] - WINDOW_SEC) : 0;
+  var tMax = t.length > 0 ? t[t.length - 1] + 1 : 1;
+
+  // Depth chart
+  depthChart.series[0].data = t.map(function(x, i) { return { x: x, y: depthTrueBuf[i] }; });
+  depthChart.series[1].data = t.map(function(x, i) { return { x: x, y: depthMeasBuf[i] }; });
+  depthChart.series[2].data = [{ x: tMin, y: sim.targetDepth }, { x: tMax, y: sim.targetDepth }];
+  var dMin = sim.targetDepth, dMax = sim.targetDepth;
+  for (var i = 0; i < t.length; i++) {
+    if (t[i] >= tMin) {
+      if (depthTrueBuf[i] < dMin) dMin = depthTrueBuf[i];
+      if (depthTrueBuf[i] > dMax) dMax = depthTrueBuf[i];
+    }
+  }
+  depthChart.draw(tMin, tMax, dMin - 0.05, dMax + 0.05);
+
+  // PBS chart
+  pbsChart.series[0].data = t.map(function(x, i) { return { x: x, y: pbsBuf[i] }; });
+  pbsChart.series[1].data = [{ x: tMin, y: sim.neutralPbsMl }, { x: tMax, y: sim.neutralPbsMl }];
+  var pMin = sim.neutralPbsMl, pMax = sim.neutralPbsMl;
+  for (i = 0; i < t.length; i++) {
+    if (t[i] >= tMin) {
+      if (pbsBuf[i] < pMin) pMin = pbsBuf[i];
+      if (pbsBuf[i] > pMax) pMax = pbsBuf[i];
+    }
+  }
+  pbsChart.draw(tMin, tMax, Math.max(0, pMin - 1), Math.min(30, pMax + 1));
+
+  // Metrics
+  document.getElementById("m-time").textContent = sim.time.toFixed(1) + " s";
+  document.getElementById("m-depth").textContent = (sim.depth * 1000).toFixed(1) + " mm";
+  document.getElementById("m-target").textContent = (sim.targetDepth * 1000).toFixed(0) + " mm";
+  document.getElementById("m-pbs").textContent = sim.pbsMl.toFixed(1) + " ml";
+  document.getElementById("m-vel").textContent = (sim.velocity * 1000).toFixed(1) + " mm/s";
+
+  // Settle
+  var depthError = Math.abs(sim.depth - sim.targetDepth);
+  if (!settled && depthError <= TOLERANCE_M) { settled = true; settleTime = sim.time - settleChangeTime; }
+  var el = document.getElementById("m-settle");
+  if (settleTime !== null) { el.textContent = "Settle: " + settleTime.toFixed(1) + "s"; el.className = "value settle-indicator settled"; }
+  else if (settleChangeTime > 0 || sim.time > 0.1) { el.textContent = "Settling... " + (sim.time - settleChangeTime).toFixed(1) + "s"; el.className = "value settle-indicator settling"; }
+  else el.textContent = "";
+}
+
+// Animation loop
+var animId = null;
+function loop() {
+  if (!running) return;
+  for (var i = 0; i < STEPS_PER_FRAME; i++) sim.step();
+  record();
+  updateCharts();
+  animId = requestAnimationFrame(loop);
+}
+
+function play()  { running = true; document.getElementById("btn-play").classList.add("active"); document.getElementById("btn-pause").classList.remove("active"); loop(); }
+function pause() { running = false; document.getElementById("btn-pause").classList.add("active"); document.getElementById("btn-play").classList.remove("active"); if (animId) cancelAnimationFrame(animId); }
+function resetSim() { pause(); createSim(); updateCharts(); }
+
+document.getElementById("btn-play").addEventListener("click", play);
+document.getElementById("btn-pause").addEventListener("click", pause);
+document.getElementById("btn-reset").addEventListener("click", resetSim);
+
+document.getElementById("target-slider").addEventListener("input", function(e) {
+  var val = parseFloat(e.target.value);
+  document.getElementById("slider-val").textContent = val.toFixed(2) + " m";
+  if (sim) { sim.targetDepth = val; settleChangeTime = sim.time; settled = false; settleTime = null; }
+});
+
+function updateSensorMode() {
+  var pOn = document.getElementById("chk-pressure").checked;
+  var aOn = document.getElementById("chk-accel").checked;
+  if (!pOn && !aOn) { document.getElementById("chk-pressure").checked = true; if (sim) sim.sensorMode = "pressure"; return; }
+  if (sim) { if (pOn && aOn) sim.sensorMode = "both"; else if (pOn) sim.sensorMode = "pressure"; else sim.sensorMode = "accel"; }
+}
+document.getElementById("chk-pressure").addEventListener("change", updateSensorMode);
+document.getElementById("chk-accel").addEventListener("change", updateSensorMode);
+document.querySelectorAll('input[name="accel"]').forEach(function(r) { r.addEventListener("change", function() { resetSim(); }); });
+
+// Init & auto-play
+createSim(); updateCharts(); play();
+</script>
+</body>
+</html>

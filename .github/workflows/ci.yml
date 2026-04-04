@@ -1,0 +1,43 @@
+# CI check for pull requests — validates web deployment artifact
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pages: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate web directory exists
+        run: |
+          if [ ! -f web/index.html ]; then
+            echo "::error::web/index.html not found"
+            exit 1
+          fi
+          echo "web/index.html found ($(wc -c < web/index.html) bytes)"
+
+      - name: Validate HTML structure
+        run: |
+          # Check for required HTML elements
+          grep -q '<!DOCTYPE html>' web/index.html || { echo "::error::Missing DOCTYPE"; exit 1; }
+          grep -q '<html' web/index.html || { echo "::error::Missing <html> tag"; exit 1; }
+          grep -q '</html>' web/index.html || { echo "::error::Missing </html> tag"; exit 1; }
+          grep -q '<head>' web/index.html || { echo "::error::Missing <head> tag"; exit 1; }
+          grep -q '<body>' web/index.html || { echo "::error::Missing <body> tag"; exit 1; }
+          echo "HTML structure is valid"
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+
+      - name: Build Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: web

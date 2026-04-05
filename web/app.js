@@ -1058,7 +1058,7 @@ function startGame() {
   document.getElementById("btn-game").textContent = "\u23F9 Stop Game";
 
   // Show hint to guide the player
-  document.getElementById("hud-hint").textContent = "Click on the ring depth to navigate there!";
+  document.getElementById("hud-hint").textContent = "Click in the water at the ring depth to navigate there!";
 
   // Ensure game HUD exists
   ensureGameHUD();
@@ -1328,7 +1328,7 @@ function startFuelGame() {
   document.getElementById("btn-fuel").textContent = "\u23F9 Stop Game";
 
   // Show hint to guide the player
-  document.getElementById("hud-hint").textContent = "Click on the waypoint depth — conserve fuel!";
+  document.getElementById("hud-hint").textContent = "Click in the water at waypoint depth \u2014 conserve fuel!";
 
   ensureGameHUD();
   updateFuelHUD();

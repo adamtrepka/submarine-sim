@@ -15,23 +15,9 @@ The submarine simulation engine provides:
 
 ## Brainstormed Game Modes
 
-### 1. Depth Challenge (⭐ Implemented)
+### 1. ~~Depth Challenge~~ (removed)
 
-**Concept**: Navigate the submarine through a series of depth waypoints (rings) as quickly and precisely as possible.
-
-**Mechanics**:
-- Rings appear at different depths in sequence
-- Player clicks in water or uses slider to set each target depth
-- A ring is "collected" when the submarine reaches within tolerance (±30 mm)
-- Score based on total time and precision (how close to ring center)
-- 5 rings per game, depths randomized within 0.1–1.8 m range
-
-**Why it works**: Directly leverages the PID target-depth mechanism. The player interacts with the existing control surface (click-to-set-target) and the challenge becomes PID tuning strategy — choosing when to commit to the next ring and managing overshoot.
-
-**Difficulty progression ideas**:
-- Easy: Large tolerance (±50 mm), shallow depths only
-- Medium: Standard tolerance (±30 mm), full depth range
-- Hard: Tight tolerance (±15 mm), time penalty for overshoot
+Originally implemented, then removed in favor of the more challenging Fuel Economy mode.
 
 ---
 
@@ -51,17 +37,18 @@ The submarine simulation engine provides:
 
 ### 3. Fuel Economy Challenge (⭐ Implemented)
 
-**Concept**: Complete depth objectives with limited PBS pump budget.
+**Concept**: Complete depth objectives with limited PBS pump budget. Player decides which order to tackle the targets.
 
 **Mechanics**:
 - Player given a total "pump energy" budget (50 ml of cumulative PBS changes)
-- Must reach 5 target depths in sequence
+- All 5 target depths shown at once — player decides which order to complete them
 - Each ml of PBS change costs 1 unit of budget
+- Submarine must hold steady within ±30 mm for 2 seconds to capture a target (no fly-throughs)
 - Score = waypoint score (100 pts each, minus error penalty) + remaining fuel bonus (4 pts per ml saved)
 - If budget runs out, PBS is frozen at current level — submarine drifts on momentum/buoyancy
-- Orange-themed waypoint markers and fuel gauge on canvas
+- Orange-themed waypoint markers with dwell progress indicators and fuel gauge on canvas
 
-**Why it works**: Forces players to think about efficient depth transitions — using gravity and buoyancy intelligently rather than brute-forcing with the pump. Highlights the PBS neutral point concept.
+**Why it works**: Forces players to think strategically about route planning (which target first?), efficient depth transitions (using gravity and buoyancy), and precise control (must stabilize, not just pass through). Highlights the PBS neutral point concept.
 
 ---
 
@@ -128,9 +115,9 @@ The submarine simulation engine provides:
 
 | Priority | Game Mode | Effort | Fun Factor | Educational Value |
 |----------|-----------|--------|------------|-------------------|
-| ⭐ 1 | Depth Challenge | Low | High | Medium |
+| ~~1~~ | ~~Depth Challenge~~ | ~~Low~~ | ~~High~~ | ~~Medium~~ |
 | 2 | Precision Dive | Low | Medium | High |
-| ⭐ 3 | Fuel Economy | Medium | Medium | High |
+| ⭐ 3 | Fuel Economy | Medium | High | High |
 | 4 | Sensor Degradation | Medium | Medium | Very High |
 | 5 | Time Trial | Low | Medium | Medium |
 | 6 | Obstacle Avoidance | High | High | Medium |
@@ -141,8 +128,8 @@ The submarine simulation engine provides:
 The game mode system is designed to be non-invasive to the core simulation:
 
 - `SubmarineSim` class remains unchanged — game logic is layered on top
-- Game state (`gameState` object) manages mode, waypoints, scoring, and UI
-- Visual elements (rings, score display) are drawn during the existing `renderFrame()` call
+- Game state (`fuelState` object) manages mode, waypoints, scoring, and UI
+- Visual elements (waypoint markers, fuel gauge, dwell indicators) are drawn during the existing `renderFrame()` call
 - Game controls are added to the existing controls panel
 - The player controls the submarine using the same click-to-set-target and slider mechanisms
 

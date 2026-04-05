@@ -1013,259 +1013,6 @@ function drawGraph(canvasEl, data, tData, color, title, refLine, refColor, refLa
 // =========================================================================
 // Game Mode — Depth Challenge
 // =========================================================================
-var GAME_RING_COUNT = 5;
-var GAME_RING_TOLERANCE = 0.030; // 30mm
-var GAME_DEPTH_MIN = 0.10;
-var GAME_DEPTH_MAX = 1.80;
-
-var gameState = {
-  active: false,       // game mode running
-  rings: [],           // array of {depth, collected, collectTime, error}
-  currentRing: 0,      // index of next ring to collect
-  startTime: 0,        // sim.time at game start
-  endTime: 0,          // sim.time at game end
-  totalScore: 0,
-  finished: false,
-  showOverlay: false
-};
-
-function generateRings() {
-  var rings = [];
-  var rng = new SeededRng(Date.now() >>> 0);
-  for (var i = 0; i < GAME_RING_COUNT; i++) {
-    var depth = GAME_DEPTH_MIN + rng.random() * (GAME_DEPTH_MAX - GAME_DEPTH_MIN);
-    depth = Math.round(depth * 100) / 100;
-    rings.push({ depth: depth, collected: false, collectTime: 0, error: 0 });
-  }
-  return rings;
-}
-
-function startGame() {
-  resetSim();
-  gameState.rings = generateRings();
-  gameState.currentRing = 0;
-  gameState.startTime = 0;
-  gameState.endTime = 0;
-  gameState.totalScore = 0;
-  gameState.finished = false;
-  gameState.showOverlay = false;
-  gameState.active = true;
-
-  // Player must click in water to set target — no auto-aim
-  settleChangeTime = 0; settled = false; settleTime = null;
-
-  document.getElementById("btn-game").classList.add("game-active");
-  document.getElementById("btn-game").textContent = "\u23F9 Stop Game";
-
-  // Show hint to guide the player
-  document.getElementById("hud-hint").textContent = "Click in the water at the ring depth to navigate there!";
-
-  // Ensure game HUD exists
-  ensureGameHUD();
-  updateGameHUD();
-
-  // Remove any overlay
-  var overlay = document.getElementById("game-overlay");
-  if (overlay) overlay.remove();
-
-  play();
-}
-
-function stopGame() {
-  gameState.active = false;
-  gameState.finished = false;
-  gameState.showOverlay = false;
-  document.getElementById("btn-game").classList.remove("game-active");
-  document.getElementById("btn-game").textContent = "\uD83C\uDFAF Depth Challenge";
-  document.getElementById("hud-hint").textContent = "Click in water to set target depth";
-  var hud = document.getElementById("hud-game");
-  if (hud) hud.style.display = "none";
-  var overlay = document.getElementById("game-overlay");
-  if (overlay) overlay.remove();
-}
-
-function ensureGameHUD() {
-  var hud = document.getElementById("hud-game");
-  if (!hud) {
-    hud = document.createElement("div");
-    hud.className = "hud";
-    hud.id = "hud-game";
-    document.getElementById("game-container").appendChild(hud);
-  }
-  hud.style.display = "";
-}
-
-function updateGameHUD() {
-  var hud = document.getElementById("hud-game");
-  if (!hud) return;
-  if (!gameState.active) { hud.style.display = "none"; return; }
-  var ringLabel = (gameState.currentRing + 1) + "/" + GAME_RING_COUNT;
-  if (gameState.finished) ringLabel = GAME_RING_COUNT + "/" + GAME_RING_COUNT;
-  var elapsed = gameState.finished ? (gameState.endTime - gameState.startTime) : (sim.time - gameState.startTime);
-  hud.innerHTML =
-    '<span class="game-ring">\uD83D\uDEDF Ring ' + ringLabel + '</span>' +
-    ' &nbsp; <span class="game-time">\u23F1 ' + elapsed.toFixed(1) + 's</span>' +
-    ' &nbsp; <span class="game-score">\u2B50 ' + gameState.totalScore + ' pts</span>';
-}
-
-function updateGameLogic() {
-  if (!gameState.active || gameState.finished) return;
-  if (gameState.startTime === 0 && sim.time > 0) gameState.startTime = sim.time;
-
-  var ring = gameState.rings[gameState.currentRing];
-  var depthError = Math.abs(sim.depth - ring.depth);
-
-  if (depthError <= GAME_RING_TOLERANCE) {
-    ring.collected = true;
-    ring.collectTime = sim.time;
-    ring.error = depthError;
-
-    // Score: base 100, minus error penalty, minus time penalty
-    var errorPenalty = Math.floor((depthError / GAME_RING_TOLERANCE) * 30);
-    var timeTaken = sim.time - gameState.startTime;
-    var perRingTime = timeTaken / (gameState.currentRing + 1);
-    var timePenalty = Math.max(0, Math.floor(perRingTime - 3) * 2);
-    var ringScore = Math.max(10, 100 - errorPenalty - timePenalty);
-    gameState.totalScore += ringScore;
-
-    gameState.currentRing++;
-
-    if (gameState.currentRing >= GAME_RING_COUNT) {
-      // All rings collected — game complete
-      gameState.finished = true;
-      gameState.endTime = sim.time;
-      showGameResults();
-    } else {
-      // Player must click to set next target — no auto-aim
-      settleChangeTime = sim.time; settled = false; settleTime = null;
-    }
-  }
-}
-
-function showGameResults() {
-  var totalTime = (gameState.endTime - gameState.startTime).toFixed(1);
-  var container = document.getElementById("game-container");
-
-  // Remove existing overlay if any
-  var existing = document.getElementById("game-overlay");
-  if (existing) existing.remove();
-
-  var overlay = document.createElement("div");
-  overlay.id = "game-overlay";
-
-  var html = '<div class="overlay-box">';
-  html += '<h2>\uD83C\uDFC6 Challenge Complete!</h2>';
-  html += '<div class="final-score">' + gameState.totalScore + ' pts</div>';
-  html += '<div class="stat"><span class="label">Total Time</span> ' + totalTime + ' s</div>';
-  for (var i = 0; i < gameState.rings.length; i++) {
-    var r = gameState.rings[i];
-    var errMm = (r.error * 1000).toFixed(1);
-    html += '<div class="stat"><span class="label">Ring ' + (i + 1) + '</span> ' +
-      (r.depth * 1000).toFixed(0) + ' mm (error: ' + errMm + ' mm)</div>';
-  }
-  html += '<button id="btn-game-retry">\uD83D\uDD04 Play Again</button>';
-  html += ' <button id="btn-game-quit">Exit</button>';
-  html += '</div>';
-  overlay.innerHTML = html;
-  container.appendChild(overlay);
-
-  pause();
-
-  document.getElementById("btn-game-retry").addEventListener("click", function() { startGame(); });
-  document.getElementById("btn-game-quit").addEventListener("click", function() { stopGame(); resetSim(); play(); });
-}
-
-function drawGameRings(t) {
-  if (!gameState.active) return;
-  for (var i = 0; i < gameState.rings.length; i++) {
-    var ring = gameState.rings[i];
-    var y = depthToY(ring.depth);
-    var isCurrent = (i === gameState.currentRing && !gameState.finished);
-    var isCollected = ring.collected;
-
-    if (isCollected) {
-      // Collected ring — faded green checkmark
-      ctx.save();
-      ctx.globalAlpha = 0.35;
-      ctx.strokeStyle = "#a6e3a1";
-      ctx.lineWidth = 2;
-      ctx.setLineDash([4, 3]);
-      ctx.beginPath();
-      ctx.moveTo(60, y);
-      ctx.lineTo(W - 20, y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      // Checkmark icon
-      ctx.fillStyle = "#a6e3a1";
-      ctx.font = "bold 14px sans-serif";
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.fillText("\u2713 " + (ring.depth * 1000).toFixed(0) + " mm", 62, y - 12);
-      ctx.restore();
-    } else if (isCurrent) {
-      // Current target ring — animated, prominent
-      var pulse = 0.6 + Math.sin(t * 4) * 0.2;
-
-      // Ring zone (tolerance band)
-      ctx.save();
-      ctx.globalAlpha = 0.12 + Math.sin(t * 3) * 0.04;
-      ctx.fillStyle = "#cba6f7";
-      var bandTop = depthToY(ring.depth - GAME_RING_TOLERANCE);
-      var bandBot = depthToY(ring.depth + GAME_RING_TOLERANCE);
-      ctx.fillRect(55, bandTop, W - 70, bandBot - bandTop);
-      ctx.restore();
-
-      // Center line
-      ctx.save();
-      ctx.globalAlpha = pulse;
-      ctx.strokeStyle = "#cba6f7";
-      ctx.lineWidth = 2.5;
-      ctx.setLineDash([10, 5]);
-      ctx.beginPath();
-      ctx.moveTo(55, y);
-      ctx.lineTo(W - 15, y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-
-      // Ring markers (left + right)
-      ctx.fillStyle = "#cba6f7";
-      // Left diamond
-      ctx.beginPath();
-      ctx.moveTo(55, y - 8);
-      ctx.lineTo(63, y);
-      ctx.lineTo(55, y + 8);
-      ctx.closePath();
-      ctx.fill();
-
-      // Label
-      ctx.font = "bold 12px 'Consolas','Courier New',monospace";
-      ctx.textAlign = "right";
-      ctx.textBaseline = "middle";
-      ctx.fillStyle = "#cba6f7";
-      ctx.fillText("RING " + (i + 1) + " \u2014 " + (ring.depth * 1000).toFixed(0) + " mm", W - 18, y - 12);
-      ctx.restore();
-    } else {
-      // Future ring — subtle indicator
-      ctx.save();
-      ctx.globalAlpha = 0.2;
-      ctx.strokeStyle = "#6c7086";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([3, 6]);
-      ctx.beginPath();
-      ctx.moveTo(60, y);
-      ctx.lineTo(W - 20, y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = "#6c7086";
-      ctx.font = "10px 'Consolas',monospace";
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.fillText((ring.depth * 1000).toFixed(0) + " mm", 62, y - 8);
-      ctx.restore();
-    }
-  }
-}
-
 // =========================================================================
 // Game Mode — Fuel Economy Challenge
 // =========================================================================
@@ -1274,11 +1021,12 @@ var FUEL_WAYPOINT_TOLERANCE = 0.030; // 30mm
 var FUEL_BUDGET_ML = 50; // total ml of cumulative PBS changes allowed
 var FUEL_DEPTH_MIN = 0.10;
 var FUEL_DEPTH_MAX = 1.80;
+var FUEL_DWELL_TIME = 2.0; // seconds submarine must hold within tolerance
+var FUEL_DWELL_VELOCITY = 0.003; // max velocity (m/s) to count as "stable"
 
 var fuelState = {
   active: false,
-  waypoints: [],       // array of {depth, reached, reachTime, error}
-  currentWaypoint: 0,
+  waypoints: [],       // array of {depth, reached, reachTime, error, dwellStart}
   startTime: 0,
   endTime: 0,
   fuelBudget: FUEL_BUDGET_ML,
@@ -1291,24 +1039,31 @@ var fuelState = {
   finished: false
 };
 
+function ensureGameHUD() {
+  var hud = document.getElementById("hud-game");
+  if (!hud) {
+    hud = document.createElement("div");
+    hud.className = "hud";
+    hud.id = "hud-game";
+    document.getElementById("game-container").appendChild(hud);
+  }
+  hud.style.display = "";
+}
+
 function generateFuelWaypoints() {
   var waypoints = [];
   var rng = new SeededRng(Date.now() >>> 0);
   for (var i = 0; i < FUEL_WAYPOINT_COUNT; i++) {
     var depth = FUEL_DEPTH_MIN + rng.random() * (FUEL_DEPTH_MAX - FUEL_DEPTH_MIN);
     depth = Math.round(depth * 100) / 100;
-    waypoints.push({ depth: depth, reached: false, reachTime: 0, error: 0 });
+    waypoints.push({ depth: depth, reached: false, reachTime: 0, error: 0, dwellStart: 0 });
   }
   return waypoints;
 }
 
 function startFuelGame() {
-  // Stop any active Depth Challenge
-  if (gameState.active) stopGame();
-
   resetSim();
   fuelState.waypoints = generateFuelWaypoints();
-  fuelState.currentWaypoint = 0;
   fuelState.startTime = 0;
   fuelState.endTime = 0;
   fuelState.fuelBudget = FUEL_BUDGET_ML;
@@ -1328,7 +1083,7 @@ function startFuelGame() {
   document.getElementById("btn-fuel").textContent = "\u23F9 Stop Game";
 
   // Show hint to guide the player
-  document.getElementById("hud-hint").textContent = "Click in the water at waypoint depth \u2014 conserve fuel!";
+  document.getElementById("hud-hint").textContent = "All targets shown \u2014 click to aim, hold steady for 2s to capture!";
 
   ensureGameHUD();
   updateFuelHUD();
@@ -1356,13 +1111,16 @@ function updateFuelHUD() {
   var hud = document.getElementById("hud-game");
   if (!hud) return;
   if (!fuelState.active) { hud.style.display = "none"; return; }
-  var wpLabel = Math.min(fuelState.currentWaypoint + 1, FUEL_WAYPOINT_COUNT) + "/" + FUEL_WAYPOINT_COUNT;
-  if (fuelState.finished) wpLabel = fuelState.currentWaypoint + "/" + FUEL_WAYPOINT_COUNT;
+  var wpReached = 0;
+  for (var i = 0; i < fuelState.waypoints.length; i++) {
+    if (fuelState.waypoints[i].reached) wpReached++;
+  }
+  var wpLabel = wpReached + "/" + FUEL_WAYPOINT_COUNT;
   var elapsed = fuelState.finished ? (fuelState.endTime - fuelState.startTime) : (sim.time - fuelState.startTime);
   var fuelRemaining = Math.max(0, fuelState.fuelBudget - fuelState.fuelUsed);
   var fuelColor = fuelRemaining > 20 ? "var(--green)" : fuelRemaining > 10 ? "var(--yellow)" : "#f38ba8";
   hud.innerHTML =
-    '<span class="game-ring">\u26FD Waypoint ' + wpLabel + '</span>' +
+    '<span class="game-ring">\u26FD Targets ' + wpLabel + '</span>' +
     ' &nbsp; <span class="game-time">\u23F1 ' + elapsed.toFixed(1) + 's</span>' +
     ' &nbsp; <span style="color:' + fuelColor + ';font-weight:700">\uD83D\uDEE2 ' + fuelRemaining.toFixed(1) + ' ml</span>' +
     ' &nbsp; <span class="game-score">\u2B50 ' + fuelState.totalScore + ' pts</span>';
@@ -1394,42 +1152,49 @@ function updateFuelLogic() {
     sim.pbsMl = fuelState.frozenPbs;
   }
 
-  // Check waypoint collection
-  if (fuelState.currentWaypoint < FUEL_WAYPOINT_COUNT) {
-    var wp = fuelState.waypoints[fuelState.currentWaypoint];
+  // Check all waypoints (any order) — require stable dwell
+  var isStable = Math.abs(sim.velocity) < FUEL_DWELL_VELOCITY;
+  var wpReached = 0;
+  for (var i = 0; i < FUEL_WAYPOINT_COUNT; i++) {
+    var wp = fuelState.waypoints[i];
+    if (wp.reached) { wpReached++; continue; }
+
     var depthError = Math.abs(sim.depth - wp.depth);
+    if (depthError <= FUEL_WAYPOINT_TOLERANCE && isStable) {
+      // Submarine is within tolerance and nearly stopped — start or continue dwell
+      if (wp.dwellStart === 0) {
+        wp.dwellStart = sim.time;
+      } else if (sim.time - wp.dwellStart >= FUEL_DWELL_TIME) {
+        // Dwell requirement met — waypoint captured
+        wp.reached = true;
+        wp.reachTime = sim.time;
+        wp.error = depthError;
 
-    if (depthError <= FUEL_WAYPOINT_TOLERANCE) {
-      wp.reached = true;
-      wp.reachTime = sim.time;
-      wp.error = depthError;
-
-      // Score: base 100 per waypoint
-      var errorPenalty = Math.floor((depthError / FUEL_WAYPOINT_TOLERANCE) * 20);
-      var wpScore = Math.max(10, 100 - errorPenalty);
-      fuelState.totalScore += wpScore;
-
-      fuelState.currentWaypoint++;
-
-      if (fuelState.currentWaypoint >= FUEL_WAYPOINT_COUNT) {
-        // All waypoints reached — add fuel bonus and finish
-        var fuelRemainingFinal = Math.max(0, fuelState.fuelBudget - fuelState.fuelUsed);
-        var fuelBonus = Math.floor(fuelRemainingFinal * 4); // 4 pts per ml saved
-        fuelState.totalScore += fuelBonus;
-        fuelState.finished = true;
-        fuelState.endTime = sim.time;
-        showFuelResults();
-      } else {
-        // Player must click to set next target — no auto-aim
-        settleChangeTime = sim.time; settled = false; settleTime = null;
+        // Score: base 100 per waypoint
+        var errorPenalty = Math.floor((depthError / FUEL_WAYPOINT_TOLERANCE) * 20);
+        var wpScore = Math.max(10, 100 - errorPenalty);
+        fuelState.totalScore += wpScore;
+        wpReached++;
       }
+    } else {
+      // Outside tolerance or moving too fast — reset dwell timer
+      wp.dwellStart = 0;
     }
   }
 
-  // If fuel ran out and no waypoints can be reached, end after grace period
+  if (wpReached >= FUEL_WAYPOINT_COUNT) {
+    // All waypoints reached — add fuel bonus and finish
+    var fuelRemainingFinal = Math.max(0, fuelState.fuelBudget - fuelState.fuelUsed);
+    var fuelBonus = Math.floor(fuelRemainingFinal * 4); // 4 pts per ml saved
+    fuelState.totalScore += fuelBonus;
+    fuelState.finished = true;
+    fuelState.endTime = sim.time;
+    showFuelResults();
+  }
+
+  // If fuel ran out and submarine settled, end after grace period
   if (fuelState.frozen && !fuelState.finished) {
     var timeSinceFrozen = sim.time - fuelState.frozenTime;
-    // Check if submarine velocity is near zero (settled) after 5s grace period
     if (Math.abs(sim.velocity) < 0.001 && timeSinceFrozen > 5) {
       fuelState.finished = true;
       fuelState.endTime = sim.time;
@@ -1560,7 +1325,6 @@ function drawFuelWaypoints(t) {
   for (var i = 0; i < fuelState.waypoints.length; i++) {
     var wp = fuelState.waypoints[i];
     var y = depthToY(wp.depth);
-    var isCurrent = (i === fuelState.currentWaypoint && !fuelState.finished);
     var isReached = wp.reached;
 
     if (isReached) {
@@ -1581,13 +1345,13 @@ function drawFuelWaypoints(t) {
       ctx.textBaseline = "middle";
       ctx.fillText("\u2713 " + (wp.depth * 1000).toFixed(0) + " mm", 62, y - 12);
       ctx.restore();
-    } else if (isCurrent) {
-      // Current waypoint — animated orange
-      var pulse = 0.6 + Math.sin(t * 4) * 0.2;
+    } else {
+      // Active target — all unreached waypoints shown prominently
+      var pulse = 0.5 + Math.sin(t * 3 + i * 1.2) * 0.15;
 
       // Tolerance band
       ctx.save();
-      ctx.globalAlpha = 0.12 + Math.sin(t * 3) * 0.04;
+      ctx.globalAlpha = 0.10 + Math.sin(t * 2.5 + i) * 0.03;
       ctx.fillStyle = "#fab387";
       var bandTop = depthToY(wp.depth - FUEL_WAYPOINT_TOLERANCE);
       var bandBot = depthToY(wp.depth + FUEL_WAYPOINT_TOLERANCE);
@@ -1598,8 +1362,8 @@ function drawFuelWaypoints(t) {
       ctx.save();
       ctx.globalAlpha = pulse;
       ctx.strokeStyle = "#fab387";
-      ctx.lineWidth = 2.5;
-      ctx.setLineDash([10, 5]);
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 5]);
       ctx.beginPath();
       ctx.moveTo(55, y);
       ctx.lineTo(W - 45, y);
@@ -1609,36 +1373,42 @@ function drawFuelWaypoints(t) {
       // Left marker
       ctx.fillStyle = "#fab387";
       ctx.beginPath();
-      ctx.moveTo(55, y - 8);
-      ctx.lineTo(63, y);
-      ctx.lineTo(55, y + 8);
+      ctx.moveTo(55, y - 7);
+      ctx.lineTo(62, y);
+      ctx.lineTo(55, y + 7);
       ctx.closePath();
       ctx.fill();
 
       // Label
-      ctx.font = "bold 12px 'Consolas','Courier New',monospace";
+      ctx.font = "bold 11px 'Consolas','Courier New',monospace";
       ctx.textAlign = "right";
       ctx.textBaseline = "middle";
       ctx.fillStyle = "#fab387";
-      ctx.fillText("WP " + (i + 1) + " \u2014 " + (wp.depth * 1000).toFixed(0) + " mm", W - 50, y - 12);
-      ctx.restore();
-    } else {
-      // Future waypoint — subtle
-      ctx.save();
-      ctx.globalAlpha = 0.2;
-      ctx.strokeStyle = "#6c7086";
-      ctx.lineWidth = 1;
-      ctx.setLineDash([3, 6]);
-      ctx.beginPath();
-      ctx.moveTo(60, y);
-      ctx.lineTo(W - 50, y);
-      ctx.stroke();
-      ctx.setLineDash([]);
-      ctx.fillStyle = "#6c7086";
-      ctx.font = "10px 'Consolas',monospace";
-      ctx.textAlign = "left";
-      ctx.textBaseline = "middle";
-      ctx.fillText((wp.depth * 1000).toFixed(0) + " mm", 62, y - 8);
+      ctx.fillText((wp.depth * 1000).toFixed(0) + " mm", W - 50, y - 11);
+
+      // Dwell progress indicator — show filling arc when dwelling
+      if (wp.dwellStart > 0) {
+        var dwellElapsed = sim.time - wp.dwellStart;
+        var dwellFrac = Math.min(1, dwellElapsed / FUEL_DWELL_TIME);
+        var cx2 = 48;
+        var cy2 = y;
+
+        // Background circle
+        ctx.beginPath();
+        ctx.arc(cx2, cy2, 6, 0, Math.PI * 2);
+        ctx.fillStyle = "rgba(250,179,135,0.2)";
+        ctx.fill();
+
+        // Progress arc
+        ctx.beginPath();
+        ctx.moveTo(cx2, cy2);
+        ctx.arc(cx2, cy2, 6, -Math.PI / 2, -Math.PI / 2 + dwellFrac * Math.PI * 2);
+        ctx.closePath();
+        ctx.fillStyle = "#fab387";
+        ctx.globalAlpha = 0.8;
+        ctx.fill();
+      }
+
       ctx.restore();
     }
   }
@@ -1740,12 +1510,11 @@ function renderFrame(t) {
   drawSeaFloor(animTime);
   drawParticlesAll();
 
-  // Game rings (behind target line and submarine)
-  drawGameRings(animTime);
+  // Game waypoints (behind target line and submarine)
   drawFuelWaypoints(animTime);
 
-  // Target depth line (hidden during game mode — rings replace it)
-  if (sim && !gameState.active && !fuelState.active) drawTargetLine(sim.targetDepth, animTime);
+  // Target depth line (hidden during game mode — waypoints replace it)
+  if (sim && !fuelState.active) drawTargetLine(sim.targetDepth, animTime);
 
   // Depth scale
   drawDepthScale();
@@ -1777,11 +1546,9 @@ function loop(timestamp) {
   if (!running) return;
   for (var i = 0; i < STEPS_PER_FRAME; i++) sim.step();
   record();
-  updateGameLogic();
   updateFuelLogic();
   renderFrame(timestamp || performance.now());
   updateHUD();
-  updateGameHUD();
   updateFuelHUD();
 
   // Graphs
@@ -1817,16 +1584,11 @@ function resetSim() {
 // --- Event handlers ---
 document.getElementById("btn-play").addEventListener("click", play);
 document.getElementById("btn-pause").addEventListener("click", pause);
-document.getElementById("btn-reset").addEventListener("click", function() { if (gameState.active) stopGame(); if (fuelState.active) stopFuelGame(); resetSim(); });
-
-document.getElementById("btn-game").addEventListener("click", function() {
-  if (gameState.active) { stopGame(); resetSim(); play(); }
-  else { if (fuelState.active) stopFuelGame(); startGame(); }
-});
+document.getElementById("btn-reset").addEventListener("click", function() { if (fuelState.active) stopFuelGame(); resetSim(); });
 
 document.getElementById("btn-fuel").addEventListener("click", function() {
   if (fuelState.active) { stopFuelGame(); resetSim(); play(); }
-  else { if (gameState.active) stopGame(); startFuelGame(); }
+  else { startFuelGame(); }
 });
 
 document.getElementById("target-slider").addEventListener("input", function(e) {

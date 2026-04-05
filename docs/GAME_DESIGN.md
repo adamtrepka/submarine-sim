@@ -49,16 +49,17 @@ The submarine simulation engine provides:
 
 ---
 
-### 3. Fuel Economy Challenge
+### 3. Fuel Economy Challenge (⭐ Implemented)
 
 **Concept**: Complete depth objectives with limited PBS pump budget.
 
 **Mechanics**:
-- Player given a total "pump energy" budget (e.g., 50 ml of cumulative PBS changes)
-- Must reach 3–5 target depths in sequence
+- Player given a total "pump energy" budget (50 ml of cumulative PBS changes)
+- Must reach 5 target depths in sequence
 - Each ml of PBS change costs 1 unit of budget
-- Score = targets reached × remaining budget bonus
-- If budget runs out, PBS is frozen at current level
+- Score = waypoint score (100 pts each, minus error penalty) + remaining fuel bonus (4 pts per ml saved)
+- If budget runs out, PBS is frozen at current level — submarine drifts on momentum/buoyancy
+- Orange-themed waypoint markers and fuel gauge on canvas
 
 **Why it works**: Forces players to think about efficient depth transitions — using gravity and buoyancy intelligently rather than brute-forcing with the pump. Highlights the PBS neutral point concept.
 
@@ -129,7 +130,7 @@ The submarine simulation engine provides:
 |----------|-----------|--------|------------|-------------------|
 | ⭐ 1 | Depth Challenge | Low | High | Medium |
 | 2 | Precision Dive | Low | Medium | High |
-| 3 | Fuel Economy | Medium | Medium | High |
+| ⭐ 3 | Fuel Economy | Medium | Medium | High |
 | 4 | Sensor Degradation | Medium | Medium | Very High |
 | 5 | Time Trial | Low | Medium | Medium |
 | 6 | Obstacle Avoidance | High | High | Medium |

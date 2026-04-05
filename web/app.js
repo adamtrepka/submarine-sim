@@ -1271,6 +1271,385 @@ function drawGameRings(t) {
 }
 
 // =========================================================================
+// Game Mode — Fuel Economy Challenge
+// =========================================================================
+var FUEL_WAYPOINT_COUNT = 5;
+var FUEL_WAYPOINT_TOLERANCE = 0.030; // 30mm
+var FUEL_BUDGET_ML = 50; // total ml of cumulative PBS changes allowed
+var FUEL_DEPTH_MIN = 0.10;
+var FUEL_DEPTH_MAX = 1.80;
+
+var fuelState = {
+  active: false,
+  waypoints: [],       // array of {depth, reached, reachTime, error}
+  currentWaypoint: 0,
+  startTime: 0,
+  endTime: 0,
+  fuelBudget: FUEL_BUDGET_ML,
+  fuelUsed: 0,         // cumulative ml of PBS changes
+  prevPbsForFuel: 0,   // previous PBS value for delta tracking
+  frozen: false,       // PBS frozen when fuel runs out
+  frozenPbs: 0,        // PBS level when frozen
+  totalScore: 0,
+  finished: false
+};
+
+function generateFuelWaypoints() {
+  var waypoints = [];
+  var rng = new SeededRng(Date.now() >>> 0);
+  for (var i = 0; i < FUEL_WAYPOINT_COUNT; i++) {
+    var depth = FUEL_DEPTH_MIN + rng.random() * (FUEL_DEPTH_MAX - FUEL_DEPTH_MIN);
+    depth = Math.round(depth * 100) / 100;
+    waypoints.push({ depth: depth, reached: false, reachTime: 0, error: 0 });
+  }
+  return waypoints;
+}
+
+function startFuelGame() {
+  // Stop any active Depth Challenge
+  if (gameState.active) stopGame();
+
+  resetSim();
+  fuelState.waypoints = generateFuelWaypoints();
+  fuelState.currentWaypoint = 0;
+  fuelState.startTime = 0;
+  fuelState.endTime = 0;
+  fuelState.fuelBudget = FUEL_BUDGET_ML;
+  fuelState.fuelUsed = 0;
+  fuelState.prevPbsForFuel = sim.pbsMl;
+  fuelState.frozen = false;
+  fuelState.frozenPbs = 0;
+  fuelState.totalScore = 0;
+  fuelState.finished = false;
+  fuelState.active = true;
+
+  // Set first waypoint as target
+  var firstDepth = fuelState.waypoints[0].depth;
+  sim.targetDepth = firstDepth;
+  document.getElementById("target-slider").value = firstDepth;
+  document.getElementById("slider-val").textContent = firstDepth.toFixed(2) + " m";
+  settleChangeTime = 0; settled = false; settleTime = null;
+
+  document.getElementById("btn-fuel").classList.add("game-active");
+  document.getElementById("btn-fuel").textContent = "\u23F9 Stop Game";
+
+  ensureGameHUD();
+  updateFuelHUD();
+
+  var overlay = document.getElementById("game-overlay");
+  if (overlay) overlay.remove();
+
+  play();
+}
+
+function stopFuelGame() {
+  fuelState.active = false;
+  fuelState.finished = false;
+  fuelState.frozen = false;
+  document.getElementById("btn-fuel").classList.remove("game-active");
+  document.getElementById("btn-fuel").textContent = "\u26FD Fuel Economy";
+  var hud = document.getElementById("hud-game");
+  if (hud) hud.style.display = "none";
+  var overlay = document.getElementById("game-overlay");
+  if (overlay) overlay.remove();
+}
+
+function updateFuelHUD() {
+  var hud = document.getElementById("hud-game");
+  if (!hud) return;
+  if (!fuelState.active) { hud.style.display = "none"; return; }
+  var wpLabel = Math.min(fuelState.currentWaypoint + 1, FUEL_WAYPOINT_COUNT) + "/" + FUEL_WAYPOINT_COUNT;
+  if (fuelState.finished) wpLabel = fuelState.currentWaypoint + "/" + FUEL_WAYPOINT_COUNT;
+  var elapsed = fuelState.finished ? (fuelState.endTime - fuelState.startTime) : (sim.time - fuelState.startTime);
+  var fuelRemaining = Math.max(0, fuelState.fuelBudget - fuelState.fuelUsed);
+  var fuelColor = fuelRemaining > 20 ? "var(--green)" : fuelRemaining > 10 ? "var(--yellow)" : "#f38ba8";
+  hud.innerHTML =
+    '<span class="game-ring">\u26FD Waypoint ' + wpLabel + '</span>' +
+    ' &nbsp; <span class="game-time">\u23F1 ' + elapsed.toFixed(1) + 's</span>' +
+    ' &nbsp; <span style="color:' + fuelColor + ';font-weight:700">\uD83D\uDEE2 ' + fuelRemaining.toFixed(1) + ' ml</span>' +
+    ' &nbsp; <span class="game-score">\u2B50 ' + fuelState.totalScore + ' pts</span>';
+}
+
+function updateFuelLogic() {
+  if (!fuelState.active || fuelState.finished) return;
+  if (fuelState.startTime === 0 && sim.time > 0) {
+    fuelState.startTime = sim.time;
+    fuelState.prevPbsForFuel = sim.pbsMl;
+  }
+
+  // Track fuel consumption (cumulative PBS changes)
+  var pbsDelta = Math.abs(sim.pbsMl - fuelState.prevPbsForFuel);
+  fuelState.fuelUsed += pbsDelta;
+  fuelState.prevPbsForFuel = sim.pbsMl;
+
+  // Check if fuel ran out
+  var fuelRemaining = fuelState.fuelBudget - fuelState.fuelUsed;
+  if (fuelRemaining <= 0 && !fuelState.frozen) {
+    fuelState.frozen = true;
+    fuelState.frozenPbs = sim.pbsMl;
+    fuelState.fuelUsed = fuelState.fuelBudget; // clamp
+  }
+
+  // If frozen, force PBS to stay at frozen level
+  if (fuelState.frozen) {
+    sim.pbsMl = fuelState.frozenPbs;
+  }
+
+  // Check waypoint collection
+  if (fuelState.currentWaypoint < FUEL_WAYPOINT_COUNT) {
+    var wp = fuelState.waypoints[fuelState.currentWaypoint];
+    var depthError = Math.abs(sim.depth - wp.depth);
+
+    if (depthError <= FUEL_WAYPOINT_TOLERANCE) {
+      wp.reached = true;
+      wp.reachTime = sim.time;
+      wp.error = depthError;
+
+      // Score: base 100 per waypoint
+      var errorPenalty = Math.floor((depthError / FUEL_WAYPOINT_TOLERANCE) * 20);
+      var wpScore = Math.max(10, 100 - errorPenalty);
+      fuelState.totalScore += wpScore;
+
+      fuelState.currentWaypoint++;
+
+      if (fuelState.currentWaypoint >= FUEL_WAYPOINT_COUNT) {
+        // All waypoints reached — add fuel bonus and finish
+        var fuelRemainingFinal = Math.max(0, fuelState.fuelBudget - fuelState.fuelUsed);
+        var fuelBonus = Math.floor(fuelRemainingFinal * 4); // 4 pts per ml saved
+        fuelState.totalScore += fuelBonus;
+        fuelState.finished = true;
+        fuelState.endTime = sim.time;
+        showFuelResults();
+      } else {
+        // Set next waypoint
+        var nextDepth = fuelState.waypoints[fuelState.currentWaypoint].depth;
+        sim.targetDepth = nextDepth;
+        document.getElementById("target-slider").value = nextDepth;
+        document.getElementById("slider-val").textContent = nextDepth.toFixed(2) + " m";
+        settleChangeTime = sim.time; settled = false; settleTime = null;
+      }
+    }
+  }
+
+  // If fuel ran out and no waypoints can be reached, end after 10s grace period
+  if (fuelState.frozen && !fuelState.finished) {
+    var timeSinceFrozen = sim.time - fuelState.startTime;
+    // Check if submarine velocity is near zero (settled) for 5 seconds
+    if (Math.abs(sim.velocity) < 0.001 && timeSinceFrozen > 5) {
+      fuelState.finished = true;
+      fuelState.endTime = sim.time;
+      showFuelResults();
+    }
+  }
+}
+
+function showFuelResults() {
+  var totalTime = (fuelState.endTime - fuelState.startTime).toFixed(1);
+  var fuelRemaining = Math.max(0, fuelState.fuelBudget - fuelState.fuelUsed);
+  var container = document.getElementById("game-container");
+
+  var existing = document.getElementById("game-overlay");
+  if (existing) existing.remove();
+
+  var overlay = document.createElement("div");
+  overlay.id = "game-overlay";
+
+  var wpReached = 0;
+  for (var i = 0; i < fuelState.waypoints.length; i++) {
+    if (fuelState.waypoints[i].reached) wpReached++;
+  }
+
+  var html = '<div class="overlay-box">';
+  if (wpReached >= FUEL_WAYPOINT_COUNT) {
+    html += '<h2>\uD83C\uDFC6 Mission Complete!</h2>';
+  } else {
+    html += '<h2>\u26FD Fuel Depleted!</h2>';
+  }
+  html += '<div class="final-score">' + fuelState.totalScore + ' pts</div>';
+  html += '<div class="stat"><span class="label">Total Time</span> ' + totalTime + ' s</div>';
+  html += '<div class="stat"><span class="label">Waypoints</span> ' + wpReached + '/' + FUEL_WAYPOINT_COUNT + '</div>';
+  html += '<div class="stat"><span class="label">Fuel Used</span> ' + fuelState.fuelUsed.toFixed(1) + '/' + fuelState.fuelBudget.toFixed(0) + ' ml</div>';
+  html += '<div class="stat"><span class="label">Fuel Remaining</span> ' + fuelRemaining.toFixed(1) + ' ml (+' + Math.floor(fuelRemaining * 4) + ' pts bonus)</div>';
+
+  for (i = 0; i < fuelState.waypoints.length; i++) {
+    var wp = fuelState.waypoints[i];
+    if (wp.reached) {
+      html += '<div class="stat"><span class="label">WP ' + (i + 1) + '</span> ' +
+        (wp.depth * 1000).toFixed(0) + ' mm \u2713</div>';
+    } else {
+      html += '<div class="stat"><span class="label">WP ' + (i + 1) + '</span> ' +
+        (wp.depth * 1000).toFixed(0) + ' mm \u2717</div>';
+    }
+  }
+  html += '<button id="btn-fuel-retry">\uD83D\uDD04 Play Again</button>';
+  html += ' <button id="btn-fuel-quit">Exit</button>';
+  html += '</div>';
+  overlay.innerHTML = html;
+  container.appendChild(overlay);
+
+  pause();
+
+  document.getElementById("btn-fuel-retry").addEventListener("click", function() { startFuelGame(); });
+  document.getElementById("btn-fuel-quit").addEventListener("click", function() { stopFuelGame(); resetSim(); play(); });
+}
+
+function drawFuelBar(t) {
+  if (!fuelState.active) return;
+  var fuelRemaining = Math.max(0, fuelState.fuelBudget - fuelState.fuelUsed);
+  var fuelFrac = fuelRemaining / fuelState.fuelBudget;
+
+  // Draw fuel bar on the right side of the canvas
+  var barX = W - 38, barY = skyH + 20, barW = 18, barH = waterH * 0.35;
+
+  // Background
+  ctx.fillStyle = "rgba(10,14,26,0.75)";
+  ctx.strokeStyle = "rgba(100,130,180,0.3)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.roundRect(barX - 4, barY - 18, barW + 8, barH + 34, 6);
+  ctx.fill();
+  ctx.stroke();
+
+  // Title
+  ctx.fillStyle = "rgba(200,220,255,0.6)";
+  ctx.font = "bold 8px 'Consolas',monospace";
+  ctx.textAlign = "center";
+  ctx.fillText("FUEL", barX + barW / 2, barY - 8);
+
+  // Tank outline
+  ctx.strokeStyle = "rgba(150,170,200,0.4)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(barX, barY, barW, barH);
+
+  // Fill with color gradient based on remaining fuel
+  var fillH = fuelFrac * barH;
+  var fillColor;
+  if (fuelFrac > 0.4) fillColor = "#a6e3a1";       // green
+  else if (fuelFrac > 0.2) fillColor = "#f9e2af";   // yellow
+  else fillColor = "#f38ba8";                         // red
+
+  if (fuelState.frozen) {
+    // Pulsing red when frozen
+    var flashAlpha = 0.5 + Math.sin(t * 6) * 0.3;
+    ctx.fillStyle = "rgba(243,139,168," + flashAlpha + ")";
+  } else {
+    var fillGrad = ctx.createLinearGradient(0, barY + barH, 0, barY);
+    fillGrad.addColorStop(0, fillColor);
+    fillGrad.addColorStop(1, fillColor + "99");
+    ctx.fillStyle = fillGrad;
+  }
+  ctx.fillRect(barX, barY + barH - fillH, barW, fillH);
+
+  // Value label
+  ctx.fillStyle = "#cdd6f4";
+  ctx.font = "9px 'Consolas',monospace";
+  ctx.textAlign = "center";
+  ctx.fillText(fuelRemaining.toFixed(1), barX + barW / 2, barY + barH + 12);
+  ctx.fillStyle = "rgba(200,220,255,0.4)";
+  ctx.fillText("ml", barX + barW / 2, barY + barH + 22);
+
+  // FROZEN label when fuel depleted
+  if (fuelState.frozen) {
+    ctx.save();
+    ctx.globalAlpha = 0.6 + Math.sin(t * 4) * 0.3;
+    ctx.fillStyle = "#f38ba8";
+    ctx.font = "bold 9px 'Consolas',monospace";
+    ctx.textAlign = "center";
+    ctx.fillText("EMPTY", barX + barW / 2, barY - 1);
+    ctx.restore();
+  }
+}
+
+function drawFuelWaypoints(t) {
+  if (!fuelState.active) return;
+  for (var i = 0; i < fuelState.waypoints.length; i++) {
+    var wp = fuelState.waypoints[i];
+    var y = depthToY(wp.depth);
+    var isCurrent = (i === fuelState.currentWaypoint && !fuelState.finished);
+    var isReached = wp.reached;
+
+    if (isReached) {
+      // Reached waypoint — faded green
+      ctx.save();
+      ctx.globalAlpha = 0.35;
+      ctx.strokeStyle = "#a6e3a1";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(60, y);
+      ctx.lineTo(W - 50, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#a6e3a1";
+      ctx.font = "bold 14px sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText("\u2713 " + (wp.depth * 1000).toFixed(0) + " mm", 62, y - 12);
+      ctx.restore();
+    } else if (isCurrent) {
+      // Current waypoint — animated orange
+      var pulse = 0.6 + Math.sin(t * 4) * 0.2;
+
+      // Tolerance band
+      ctx.save();
+      ctx.globalAlpha = 0.12 + Math.sin(t * 3) * 0.04;
+      ctx.fillStyle = "#fab387";
+      var bandTop = depthToY(wp.depth - FUEL_WAYPOINT_TOLERANCE);
+      var bandBot = depthToY(wp.depth + FUEL_WAYPOINT_TOLERANCE);
+      ctx.fillRect(55, bandTop, W - 100, bandBot - bandTop);
+      ctx.restore();
+
+      // Center line
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.strokeStyle = "#fab387";
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([10, 5]);
+      ctx.beginPath();
+      ctx.moveTo(55, y);
+      ctx.lineTo(W - 45, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Left marker
+      ctx.fillStyle = "#fab387";
+      ctx.beginPath();
+      ctx.moveTo(55, y - 8);
+      ctx.lineTo(63, y);
+      ctx.lineTo(55, y + 8);
+      ctx.closePath();
+      ctx.fill();
+
+      // Label
+      ctx.font = "bold 12px 'Consolas','Courier New',monospace";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#fab387";
+      ctx.fillText("WP " + (i + 1) + " \u2014 " + (wp.depth * 1000).toFixed(0) + " mm", W - 50, y - 12);
+      ctx.restore();
+    } else {
+      // Future waypoint — subtle
+      ctx.save();
+      ctx.globalAlpha = 0.2;
+      ctx.strokeStyle = "#6c7086";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 6]);
+      ctx.beginPath();
+      ctx.moveTo(60, y);
+      ctx.lineTo(W - 50, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#6c7086";
+      ctx.font = "10px 'Consolas',monospace";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText((wp.depth * 1000).toFixed(0) + " mm", 62, y - 8);
+      ctx.restore();
+    }
+  }
+}
+
+// =========================================================================
 // UI Setup & Game Loop
 // =========================================================================
 var SIM_SPEED = 10, FPS = 30, DT = 0.001;
@@ -1368,9 +1747,10 @@ function renderFrame(t) {
 
   // Game rings (behind target line and submarine)
   drawGameRings(animTime);
+  drawFuelWaypoints(animTime);
 
   // Target depth line (hidden during game mode — rings replace it)
-  if (sim && !gameState.active) drawTargetLine(sim.targetDepth, animTime);
+  if (sim && !gameState.active && !fuelState.active) drawTargetLine(sim.targetDepth, animTime);
 
   // Depth scale
   drawDepthScale();
@@ -1393,6 +1773,9 @@ function renderFrame(t) {
 
   // PBS Gauge
   if (sim) drawPBSGauge(sim.pbsMl, sim.neutralPbsMl);
+
+  // Fuel bar (fuel economy game only)
+  drawFuelBar(animTime);
 }
 
 function loop(timestamp) {
@@ -1400,9 +1783,11 @@ function loop(timestamp) {
   for (var i = 0; i < STEPS_PER_FRAME; i++) sim.step();
   record();
   updateGameLogic();
+  updateFuelLogic();
   renderFrame(timestamp || performance.now());
   updateHUD();
   updateGameHUD();
+  updateFuelHUD();
 
   // Graphs
   drawGraph(graphDepthCanvas, depthBuf, tBuf, "#89b4fa", "Depth History", sim.targetDepth, "rgba(243,139,168,0.6)", "target");
@@ -1437,15 +1822,20 @@ function resetSim() {
 // --- Event handlers ---
 document.getElementById("btn-play").addEventListener("click", play);
 document.getElementById("btn-pause").addEventListener("click", pause);
-document.getElementById("btn-reset").addEventListener("click", function() { if (gameState.active) stopGame(); resetSim(); });
+document.getElementById("btn-reset").addEventListener("click", function() { if (gameState.active) stopGame(); if (fuelState.active) stopFuelGame(); resetSim(); });
 
 document.getElementById("btn-game").addEventListener("click", function() {
   if (gameState.active) { stopGame(); resetSim(); play(); }
-  else startGame();
+  else { if (fuelState.active) stopFuelGame(); startGame(); }
+});
+
+document.getElementById("btn-fuel").addEventListener("click", function() {
+  if (fuelState.active) { stopFuelGame(); resetSim(); play(); }
+  else { if (gameState.active) stopGame(); startFuelGame(); }
 });
 
 document.getElementById("target-slider").addEventListener("input", function(e) {
-  if (gameState.active) return; // Disable manual target changes during game
+  if (gameState.active || fuelState.active) return; // Disable manual target changes during game
   var val = parseFloat(e.target.value);
   document.getElementById("slider-val").textContent = val.toFixed(2) + " m";
   if (sim) { sim.targetDepth = val; settleChangeTime = sim.time; settled = false; settleTime = null; }
@@ -1479,7 +1869,7 @@ document.getElementById("diameter-slider").addEventListener("input", function(e)
 
 // Click-to-set-target
 canvas.addEventListener("click", function(e) {
-  if (gameState.active) return; // Disable manual target changes during game
+  if (gameState.active || fuelState.active) return; // Disable manual target changes during game
   var rect = canvas.getBoundingClientRect();
   var y = e.clientY - rect.top;
   if (y < skyH) return;

@@ -46,6 +46,9 @@ button.active{background:var(--blue);color:var(--bg);border-color:var(--blue)}
 #btn-game{background:var(--accent);color:var(--bg);border-color:var(--accent);font-weight:700;white-space:nowrap}
 #btn-game:hover{background:#b48de8}
 #btn-game.game-active{background:#a6e3a1;border-color:#a6e3a1;color:var(--bg)}
+#btn-fuel{background:var(--orange);color:var(--bg);border-color:var(--orange);font-weight:700;white-space:nowrap}
+#btn-fuel:hover{background:#e8a070}
+#btn-fuel.game-active{background:#a6e3a1;border-color:#a6e3a1;color:var(--bg)}
 #hud-game{top:auto;bottom:40px;left:50%;transform:translateX(-50%);background:rgba(10,14,26,0.85);border:1px solid var(--border);border-radius:8px;padding:8px 16px;font-size:13px;line-height:1.6;text-align:center;backdrop-filter:blur(4px);white-space:nowrap}
 #hud-game .game-score{color:var(--yellow);font-weight:700;font-size:15px}
 #hud-game .game-ring{color:var(--accent);font-weight:700}

@@ -1051,15 +1051,14 @@ function startGame() {
   gameState.showOverlay = false;
   gameState.active = true;
 
-  // Set first ring as target
-  var firstDepth = gameState.rings[0].depth;
-  sim.targetDepth = firstDepth;
-  document.getElementById("target-slider").value = firstDepth;
-  document.getElementById("slider-val").textContent = firstDepth.toFixed(2) + " m";
+  // Player must click in water to set target — no auto-aim
   settleChangeTime = 0; settled = false; settleTime = null;
 
   document.getElementById("btn-game").classList.add("game-active");
   document.getElementById("btn-game").textContent = "\u23F9 Stop Game";
+
+  // Show hint to guide the player
+  document.getElementById("hud-hint").textContent = "Click on the ring depth to navigate there!";
 
   // Ensure game HUD exists
   ensureGameHUD();
@@ -1078,6 +1077,7 @@ function stopGame() {
   gameState.showOverlay = false;
   document.getElementById("btn-game").classList.remove("game-active");
   document.getElementById("btn-game").textContent = "\uD83C\uDFAF Depth Challenge";
+  document.getElementById("hud-hint").textContent = "Click in water to set target depth";
   var hud = document.getElementById("hud-game");
   if (hud) hud.style.display = "none";
   var overlay = document.getElementById("game-overlay");
@@ -1136,11 +1136,7 @@ function updateGameLogic() {
       gameState.endTime = sim.time;
       showGameResults();
     } else {
-      // Set next ring as target
-      var nextDepth = gameState.rings[gameState.currentRing].depth;
-      sim.targetDepth = nextDepth;
-      document.getElementById("target-slider").value = nextDepth;
-      document.getElementById("slider-val").textContent = nextDepth.toFixed(2) + " m";
+      // Player must click to set next target — no auto-aim
       settleChangeTime = sim.time; settled = false; settleTime = null;
     }
   }
@@ -1325,15 +1321,14 @@ function startFuelGame() {
   fuelState.finished = false;
   fuelState.active = true;
 
-  // Set first waypoint as target
-  var firstDepth = fuelState.waypoints[0].depth;
-  sim.targetDepth = firstDepth;
-  document.getElementById("target-slider").value = firstDepth;
-  document.getElementById("slider-val").textContent = firstDepth.toFixed(2) + " m";
+  // Player must click in water to set target — no auto-aim
   settleChangeTime = 0; settled = false; settleTime = null;
 
   document.getElementById("btn-fuel").classList.add("game-active");
   document.getElementById("btn-fuel").textContent = "\u23F9 Stop Game";
+
+  // Show hint to guide the player
+  document.getElementById("hud-hint").textContent = "Click on the waypoint depth — conserve fuel!";
 
   ensureGameHUD();
   updateFuelHUD();
@@ -1350,6 +1345,7 @@ function stopFuelGame() {
   fuelState.frozen = false;
   document.getElementById("btn-fuel").classList.remove("game-active");
   document.getElementById("btn-fuel").textContent = "\u26FD Fuel Economy";
+  document.getElementById("hud-hint").textContent = "Click in water to set target depth";
   var hud = document.getElementById("hud-game");
   if (hud) hud.style.display = "none";
   var overlay = document.getElementById("game-overlay");
@@ -1424,11 +1420,7 @@ function updateFuelLogic() {
         fuelState.endTime = sim.time;
         showFuelResults();
       } else {
-        // Set next waypoint
-        var nextDepth = fuelState.waypoints[fuelState.currentWaypoint].depth;
-        sim.targetDepth = nextDepth;
-        document.getElementById("target-slider").value = nextDepth;
-        document.getElementById("slider-val").textContent = nextDepth.toFixed(2) + " m";
+        // Player must click to set next target — no auto-aim
         settleChangeTime = sim.time; settled = false; settleTime = null;
       }
     }
@@ -1838,7 +1830,6 @@ document.getElementById("btn-fuel").addEventListener("click", function() {
 });
 
 document.getElementById("target-slider").addEventListener("input", function(e) {
-  if (gameState.active || fuelState.active) return; // Disable manual target changes during game
   var val = parseFloat(e.target.value);
   document.getElementById("slider-val").textContent = val.toFixed(2) + " m";
   if (sim) { sim.targetDepth = val; settleChangeTime = sim.time; settled = false; settleTime = null; }
@@ -1870,9 +1861,8 @@ document.getElementById("diameter-slider").addEventListener("input", function(e)
   var wasRunning = running; resetSim(); if (wasRunning) play();
 });
 
-// Click-to-set-target
+// Click-to-set-target (enabled during games — player must aim!)
 canvas.addEventListener("click", function(e) {
-  if (gameState.active || fuelState.active) return; // Disable manual target changes during game
   var rect = canvas.getBoundingClientRect();
   var y = e.clientY - rect.top;
   if (y < skyH) return;

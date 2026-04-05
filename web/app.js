@@ -1021,8 +1021,9 @@ var FUEL_WAYPOINT_TOLERANCE = 0.030; // 30mm
 var FUEL_BUDGET_ML = 50; // total ml of cumulative PBS changes allowed
 var FUEL_DEPTH_MIN = 0.10;
 var FUEL_DEPTH_MAX = 1.80;
-var FUEL_DWELL_TIME = 2.0; // seconds submarine must hold within tolerance
-var FUEL_DWELL_VELOCITY = 0.003; // max velocity (m/s) to count as "stable"
+var FUEL_DWELL_TIME = 3.0; // sim seconds submarine must hold within tolerance
+var FUEL_DWELL_VELOCITY = 0.010; // max velocity (m/s) for "stable" — manual control needs margin
+var FUEL_TIME_LIMIT = 600; // sim seconds (≈60 real seconds at 10x speed)
 
 var fuelState = {
   active: false,
@@ -1036,7 +1037,8 @@ var fuelState = {
   frozenPbs: 0,        // PBS level when frozen
   frozenTime: 0,       // sim.time when fuel ran out
   totalScore: 0,
-  finished: false
+  finished: false,
+  manualPbs: 0         // player's target PBS level (manual control — no PID)
 };
 
 function ensureGameHUD() {
@@ -1075,6 +1077,7 @@ function startFuelGame() {
   fuelState.totalScore = 0;
   fuelState.finished = false;
   fuelState.active = true;
+  fuelState.manualPbs = sim.pbsMl; // start at current PBS level
 
   // Player must click in water to set target — no auto-aim
   settleChangeTime = 0; settled = false; settleTime = null;
@@ -1082,8 +1085,8 @@ function startFuelGame() {
   document.getElementById("btn-fuel").classList.add("game-active");
   document.getElementById("btn-fuel").textContent = "\u23F9 Stop Game";
 
-  // Show hint to guide the player
-  document.getElementById("hud-hint").textContent = "All targets shown \u2014 click to aim, hold steady for 2s to capture!";
+  // Show hint to guide the player — manual buoyancy control!
+  document.getElementById("hud-hint").textContent = "Manual pump control \u2014 click lower to sink, higher to rise. Stabilize at each target for 3s!";
 
   ensureGameHUD();
   updateFuelHUD();
@@ -1117,11 +1120,13 @@ function updateFuelHUD() {
   }
   var wpLabel = wpReached + "/" + FUEL_WAYPOINT_COUNT;
   var elapsed = fuelState.finished ? (fuelState.endTime - fuelState.startTime) : (sim.time - fuelState.startTime);
+  var timeLeft = Math.max(0, FUEL_TIME_LIMIT - elapsed);
   var fuelRemaining = Math.max(0, fuelState.fuelBudget - fuelState.fuelUsed);
   var fuelColor = fuelRemaining > 20 ? "var(--green)" : fuelRemaining > 10 ? "var(--yellow)" : "#f38ba8";
+  var timeColor = timeLeft > 30 ? "var(--text)" : timeLeft > 10 ? "var(--yellow)" : "#f38ba8";
   hud.innerHTML =
     '<span class="game-ring">\u26FD Targets ' + wpLabel + '</span>' +
-    ' &nbsp; <span class="game-time">\u23F1 ' + elapsed.toFixed(1) + 's</span>' +
+    ' &nbsp; <span style="color:' + timeColor + '">\u23F1 ' + timeLeft.toFixed(0) + 's</span>' +
     ' &nbsp; <span style="color:' + fuelColor + ';font-weight:700">\uD83D\uDEE2 ' + fuelRemaining.toFixed(1) + ' ml</span>' +
     ' &nbsp; <span class="game-score">\u2B50 ' + fuelState.totalScore + ' pts</span>';
 }
@@ -1145,11 +1150,21 @@ function updateFuelLogic() {
     fuelState.frozenPbs = sim.pbsMl;
     fuelState.frozenTime = sim.time;
     fuelState.fuelUsed = fuelState.fuelBudget; // clamp
+    fuelState.manualPbs = sim.pbsMl; // lock manual target too
   }
 
   // If frozen, force PBS to stay at frozen level
   if (fuelState.frozen) {
     sim.pbsMl = fuelState.frozenPbs;
+  }
+
+  // Check time limit
+  var elapsed = sim.time - fuelState.startTime;
+  if (elapsed >= FUEL_TIME_LIMIT && !fuelState.finished) {
+    fuelState.finished = true;
+    fuelState.endTime = sim.time;
+    showFuelResults();
+    return;
   }
 
   // Check all waypoints (any order) — require stable dwell
@@ -1219,14 +1234,17 @@ function showFuelResults() {
     if (fuelState.waypoints[i].reached) wpReached++;
   }
 
+  var elapsed = fuelState.endTime - fuelState.startTime;
   var html = '<div class="overlay-box">';
   if (wpReached >= FUEL_WAYPOINT_COUNT) {
     html += '<h2>\uD83C\uDFC6 Mission Complete!</h2>';
+  } else if (elapsed >= FUEL_TIME_LIMIT) {
+    html += '<h2>\u23F0 Time\u2019s Up!</h2>';
   } else {
     html += '<h2>\u26FD Fuel Depleted!</h2>';
   }
   html += '<div class="final-score">' + fuelState.totalScore + ' pts</div>';
-  html += '<div class="stat"><span class="label">Total Time</span> ' + totalTime + ' s</div>';
+  html += '<div class="stat"><span class="label">Total Time</span> ' + totalTime + ' / ' + FUEL_TIME_LIMIT + ' s</div>';
   html += '<div class="stat"><span class="label">Waypoints</span> ' + wpReached + '/' + FUEL_WAYPOINT_COUNT + '</div>';
   html += '<div class="stat"><span class="label">Fuel Used</span> ' + fuelState.fuelUsed.toFixed(1) + '/' + fuelState.fuelBudget.toFixed(0) + ' ml</div>';
   html += '<div class="stat"><span class="label">Fuel Remaining</span> ' + fuelRemaining.toFixed(1) + ' ml (+' + Math.floor(fuelRemaining * 4) + ' pts bonus)</div>';
@@ -1414,6 +1432,58 @@ function drawFuelWaypoints(t) {
   }
 }
 
+function drawManualPbsIndicator(t) {
+  if (!fuelState.active || fuelState.finished) return;
+
+  // Draw neutral buoyancy zone — faint dashed line at middle of water area
+  var neutralY = skyH + waterH * (sim.neutralPbsMl / PBS_MAX_ML);
+  ctx.save();
+  ctx.globalAlpha = 0.25;
+  ctx.strokeStyle = "#89b4fa";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 6]);
+  ctx.beginPath();
+  ctx.moveTo(40, neutralY);
+  ctx.lineTo(W - 45, neutralY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = "bold 9px 'Consolas',monospace";
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#89b4fa";
+  ctx.fillText("NEUTRAL", W - 48, neutralY - 6);
+  ctx.restore();
+
+  // Draw PBS target cursor — shows where the player's manual PBS maps to
+  var targetY = skyH + waterH * (fuelState.manualPbs / PBS_MAX_ML);
+  var cursorPulse = 0.5 + Math.sin(t * 5) * 0.2;
+  ctx.save();
+  ctx.globalAlpha = cursorPulse;
+  ctx.strokeStyle = "#f38ba8";
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  ctx.moveTo(40, targetY);
+  ctx.lineTo(W - 45, targetY);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Small triangle marker on left
+  ctx.fillStyle = "#f38ba8";
+  ctx.beginPath();
+  ctx.moveTo(38, targetY - 5);
+  ctx.lineTo(44, targetY);
+  ctx.lineTo(38, targetY + 5);
+  ctx.closePath();
+  ctx.fill();
+
+  // Label
+  ctx.font = "bold 9px 'Consolas',monospace";
+  ctx.textAlign = "left";
+  ctx.fillStyle = "#f38ba8";
+  ctx.fillText("PBS " + fuelState.manualPbs.toFixed(1) + " ml", 46, targetY - 6);
+  ctx.restore();
+}
+
 // =========================================================================
 // UI Setup & Game Loop
 // =========================================================================
@@ -1512,6 +1582,7 @@ function renderFrame(t) {
 
   // Game waypoints (behind target line and submarine)
   drawFuelWaypoints(animTime);
+  drawManualPbsIndicator(animTime);
 
   // Target depth line (hidden during game mode — waypoints replace it)
   if (sim && !fuelState.active) drawTargetLine(sim.targetDepth, animTime);
@@ -1544,7 +1615,20 @@ function renderFrame(t) {
 
 function loop(timestamp) {
   if (!running) return;
-  for (var i = 0; i < STEPS_PER_FRAME; i++) sim.step();
+  for (var i = 0; i < STEPS_PER_FRAME; i++) {
+    var savedPbs = (fuelState.active && !fuelState.finished && !fuelState.frozen) ? sim.pbsMl : -1;
+    sim.step();
+    // Manual PBS control: override PID output with player's chosen level
+    if (savedPbs >= 0) {
+      sim.pbsMl = savedPbs;
+      var maxChange = sim.maxPumpRate * sim.dt;
+      var diff = fuelState.manualPbs - sim.pbsMl;
+      sim.pbsMl += Math.max(-maxChange, Math.min(maxChange, diff));
+      sim.pbsMl = Math.max(0, Math.min(PBS_MAX_ML, sim.pbsMl));
+      // Floor clamp — prevent sinking below visible area
+      if (sim.depth > 2.05) { sim.depth = 2.05; if (sim.velocity > 0) sim.velocity = 0; }
+    }
+  }
   record();
   updateFuelLogic();
   renderFrame(timestamp || performance.now());
@@ -1592,6 +1676,7 @@ document.getElementById("btn-fuel").addEventListener("click", function() {
 });
 
 document.getElementById("target-slider").addEventListener("input", function(e) {
+  if (fuelState.active) return; // Disabled during fuel game — use canvas clicks for PBS control
   var val = parseFloat(e.target.value);
   document.getElementById("slider-val").textContent = val.toFixed(2) + " m";
   if (sim) { sim.targetDepth = val; settleChangeTime = sim.time; settled = false; settleTime = null; }
@@ -1623,11 +1708,19 @@ document.getElementById("diameter-slider").addEventListener("input", function(e)
   var wasRunning = running; resetSim(); if (wasRunning) play();
 });
 
-// Click-to-set-target (enabled during games — player must aim!)
+// Click-to-control: during fuel game sets PBS level, otherwise sets target depth
 canvas.addEventListener("click", function(e) {
   var rect = canvas.getBoundingClientRect();
   var y = e.clientY - rect.top;
   if (y < skyH) return;
+
+  if (fuelState.active && !fuelState.finished && !fuelState.frozen) {
+    // Manual PBS control: map click Y position to PBS level (0 at top, 30 at bottom)
+    var pbsTarget = ((y - skyH) / waterH) * PBS_MAX_ML;
+    fuelState.manualPbs = Math.max(0, Math.min(PBS_MAX_ML, pbsTarget));
+    return;
+  }
+
   var depth = yToDepth(y);
   depth = Math.round(depth * 100) / 100;
   depth = Math.max(0, Math.min(2, depth));
@@ -1642,6 +1735,18 @@ window.addEventListener("resize", function() {
     drawGraph(graphDepthCanvas, depthBuf, tBuf, "#89b4fa", "Depth History", sim.targetDepth, "rgba(243,139,168,0.6)", "target");
     drawGraph(graphPbsCanvas, pbsBuf, tBuf, "#a6e3a1", "PBS History", sim.neutralPbsMl, "rgba(108,112,134,0.5)", "neutral");
   }
+});
+
+// Continuous mouse tracking for fine PBS control during fuel game
+canvas.addEventListener("mousemove", function(e) {
+  if (!fuelState.active || fuelState.finished || fuelState.frozen) return;
+  var rect = canvas.getBoundingClientRect();
+  var y = e.clientY - rect.top;
+  if (y < skyH) y = skyH;
+  var maxY = skyH + waterH;
+  if (y > maxY) y = maxY;
+  var pbsTarget = ((y - skyH) / waterH) * PBS_MAX_ML;
+  fuelState.manualPbs = Math.max(0, Math.min(PBS_MAX_ML, pbsTarget));
 });
 
 // --- Initialize ---

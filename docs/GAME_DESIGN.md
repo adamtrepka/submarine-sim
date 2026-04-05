@@ -37,18 +37,20 @@ Originally implemented, then removed in favor of the more challenging Fuel Econo
 
 ### 3. Fuel Economy Challenge (⭐ Implemented)
 
-**Concept**: Complete depth objectives with limited PBS pump budget. Player decides which order to tackle the targets.
+**Concept**: Complete depth objectives with limited PBS pump budget using **manual buoyancy control** — no PID auto-pilot. The player directly controls the PBS pump level by clicking in the water.
 
 **Mechanics**:
+- **Manual PBS control**: PID auto-navigation is disabled. Clicking in the water sets the PBS pump level directly (top of water = 0 ml, bottom = 30 ml). The player must learn how PBS relates to buoyancy and manually guide the submarine.
 - Player given a total "pump energy" budget (50 ml of cumulative PBS changes)
 - All 5 target depths shown at once — player decides which order to complete them
 - Each ml of PBS change costs 1 unit of budget
-- Submarine must hold steady within ±30 mm for 2 seconds to capture a target (no fly-throughs)
+- Submarine must hold steady within ±20 mm with velocity < 2 mm/s for 3 seconds to capture a target
+- Time limit: 120 seconds — forces urgency
 - Score = waypoint score (100 pts each, minus error penalty) + remaining fuel bonus (4 pts per ml saved)
 - If budget runs out, PBS is frozen at current level — submarine drifts on momentum/buoyancy
-- Orange-themed waypoint markers with dwell progress indicators and fuel gauge on canvas
+- Canvas shows: neutral buoyancy line, PBS target cursor, waypoint markers with dwell progress, fuel gauge
 
-**Why it works**: Forces players to think strategically about route planning (which target first?), efficient depth transitions (using gravity and buoyancy), and precise control (must stabilize, not just pass through). Highlights the PBS neutral point concept.
+**Why it works**: The player becomes the PID controller. To reach a target depth, they must: (1) increase PBS above neutral to sink, (2) reduce PBS toward neutral as they approach the target to decelerate, (3) fine-tune PBS near neutral to hover. Overshooting wastes fuel. Route planning, momentum management, and understanding neutral buoyancy are all critical. This is genuinely educational and challenging.
 
 ---
 

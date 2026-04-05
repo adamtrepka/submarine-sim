@@ -40,12 +40,12 @@ Originally implemented, then removed in favor of the more challenging Fuel Econo
 **Concept**: Complete depth objectives with limited PBS pump budget using **manual buoyancy control** — no PID auto-pilot. The player directly controls the PBS pump level by clicking in the water.
 
 **Mechanics**:
-- **Manual PBS control**: PID auto-navigation is disabled. Clicking in the water sets the PBS pump level directly (top of water = 0 ml, bottom = 30 ml). The player must learn how PBS relates to buoyancy and manually guide the submarine.
+- **Manual PBS control**: PID auto-navigation is disabled. Mouse position in the water area continuously controls PBS pump level (top of water = 0 ml, bottom = 30 ml). The player must learn how PBS relates to buoyancy and manually guide the submarine.
 - Player given a total "pump energy" budget (50 ml of cumulative PBS changes)
 - All 5 target depths shown at once — player decides which order to complete them
 - Each ml of PBS change costs 1 unit of budget
-- Submarine must hold steady within ±20 mm with velocity < 2 mm/s for 3 seconds to capture a target
-- Time limit: 120 seconds — forces urgency
+- Submarine must hold steady within ±30 mm with velocity < 10 mm/s for 3 sim seconds to capture a target
+- Time limit: 600 sim seconds (~60 real seconds) — forces urgency
 - Score = waypoint score (100 pts each, minus error penalty) + remaining fuel bonus (4 pts per ml saved)
 - If budget runs out, PBS is frozen at current level — submarine drifts on momentum/buoyancy
 - Canvas shows: neutral buoyancy line, PBS target cursor, waypoint markers with dwell progress, fuel gauge

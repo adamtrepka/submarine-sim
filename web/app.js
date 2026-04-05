@@ -1023,7 +1023,9 @@ var FUEL_DEPTH_MIN = 0.10;
 var FUEL_DEPTH_MAX = 1.80;
 var FUEL_DWELL_TIME = 3.0; // sim seconds submarine must hold within tolerance
 var FUEL_DWELL_VELOCITY = 0.010; // max velocity (m/s) for "stable" — manual control needs margin
-var FUEL_TIME_LIMIT = 600; // sim seconds (≈60 real seconds at 10x speed)
+var FUEL_TIME_LIMIT = 600; // sim seconds (~60 real seconds at 10x speed)
+
+var FUEL_FLOOR_DEPTH = 2.05; // max depth during fuel game (visible area limit)
 
 var fuelState = {
   active: false,
@@ -1626,7 +1628,7 @@ function loop(timestamp) {
       sim.pbsMl += Math.max(-maxChange, Math.min(maxChange, diff));
       sim.pbsMl = Math.max(0, Math.min(PBS_MAX_ML, sim.pbsMl));
       // Floor clamp — prevent sinking below visible area
-      if (sim.depth > 2.05) { sim.depth = 2.05; if (sim.velocity > 0) sim.velocity = 0; }
+      if (sim.depth > FUEL_FLOOR_DEPTH) { sim.depth = FUEL_FLOOR_DEPTH; if (sim.velocity > 0) sim.velocity = 0; }
     }
   }
   record();

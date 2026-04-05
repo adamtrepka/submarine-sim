@@ -28,3 +28,4 @@ nul
 
 # Test images (not assets/)
 /test_*.png
+node_modules/

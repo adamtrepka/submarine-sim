@@ -1011,6 +1011,266 @@ function drawGraph(canvasEl, data, tData, color, title, refLine, refColor, refLa
 }
 
 // =========================================================================
+// Game Mode — Depth Challenge
+// =========================================================================
+var GAME_RING_COUNT = 5;
+var GAME_RING_TOLERANCE = 0.030; // 30mm
+var GAME_DEPTH_MIN = 0.10;
+var GAME_DEPTH_MAX = 1.80;
+
+var gameState = {
+  active: false,       // game mode running
+  rings: [],           // array of {depth, collected, collectTime, error}
+  currentRing: 0,      // index of next ring to collect
+  startTime: 0,        // sim.time at game start
+  endTime: 0,          // sim.time at game end
+  totalScore: 0,
+  finished: false,
+  showOverlay: false
+};
+
+function generateRings() {
+  var rings = [];
+  var rng = new SeededRng(Date.now() >>> 0);
+  for (var i = 0; i < GAME_RING_COUNT; i++) {
+    var depth = GAME_DEPTH_MIN + rng.random() * (GAME_DEPTH_MAX - GAME_DEPTH_MIN);
+    depth = Math.round(depth * 100) / 100;
+    rings.push({ depth: depth, collected: false, collectTime: 0, error: 0 });
+  }
+  return rings;
+}
+
+function startGame() {
+  resetSim();
+  gameState.rings = generateRings();
+  gameState.currentRing = 0;
+  gameState.startTime = 0;
+  gameState.endTime = 0;
+  gameState.totalScore = 0;
+  gameState.finished = false;
+  gameState.showOverlay = false;
+  gameState.active = true;
+
+  // Set first ring as target
+  var firstDepth = gameState.rings[0].depth;
+  sim.targetDepth = firstDepth;
+  document.getElementById("target-slider").value = firstDepth;
+  document.getElementById("slider-val").textContent = firstDepth.toFixed(2) + " m";
+  settleChangeTime = 0; settled = false; settleTime = null;
+
+  document.getElementById("btn-game").classList.add("game-active");
+  document.getElementById("btn-game").textContent = "\u23F9 Stop Game";
+
+  // Ensure game HUD exists
+  ensureGameHUD();
+  updateGameHUD();
+
+  // Remove any overlay
+  var overlay = document.getElementById("game-overlay");
+  if (overlay) overlay.remove();
+
+  play();
+}
+
+function stopGame() {
+  gameState.active = false;
+  gameState.finished = false;
+  gameState.showOverlay = false;
+  document.getElementById("btn-game").classList.remove("game-active");
+  document.getElementById("btn-game").textContent = "\uD83C\uDFAF Depth Challenge";
+  var hud = document.getElementById("hud-game");
+  if (hud) hud.style.display = "none";
+  var overlay = document.getElementById("game-overlay");
+  if (overlay) overlay.remove();
+}
+
+function ensureGameHUD() {
+  var hud = document.getElementById("hud-game");
+  if (!hud) {
+    hud = document.createElement("div");
+    hud.className = "hud";
+    hud.id = "hud-game";
+    document.getElementById("game-container").appendChild(hud);
+  }
+  hud.style.display = "";
+}
+
+function updateGameHUD() {
+  var hud = document.getElementById("hud-game");
+  if (!hud) return;
+  if (!gameState.active) { hud.style.display = "none"; return; }
+  var ringLabel = (gameState.currentRing + 1) + "/" + GAME_RING_COUNT;
+  if (gameState.finished) ringLabel = GAME_RING_COUNT + "/" + GAME_RING_COUNT;
+  var elapsed = gameState.finished ? (gameState.endTime - gameState.startTime) : (sim.time - gameState.startTime);
+  hud.innerHTML =
+    '<span class="game-ring">\uD83D\uDEDF Ring ' + ringLabel + '</span>' +
+    ' &nbsp; <span class="game-time">\u23F1 ' + elapsed.toFixed(1) + 's</span>' +
+    ' &nbsp; <span class="game-score">\u2B50 ' + gameState.totalScore + ' pts</span>';
+}
+
+function updateGameLogic() {
+  if (!gameState.active || gameState.finished) return;
+  if (gameState.startTime === 0 && sim.time > 0) gameState.startTime = sim.time;
+
+  var ring = gameState.rings[gameState.currentRing];
+  var depthError = Math.abs(sim.depth - ring.depth);
+
+  if (depthError <= GAME_RING_TOLERANCE) {
+    ring.collected = true;
+    ring.collectTime = sim.time;
+    ring.error = depthError;
+
+    // Score: base 100, minus error penalty, minus time penalty
+    var errorPenalty = Math.floor((depthError / GAME_RING_TOLERANCE) * 30);
+    var timeTaken = sim.time - gameState.startTime;
+    var perRingTime = timeTaken / (gameState.currentRing + 1);
+    var timePenalty = Math.max(0, Math.floor(perRingTime - 3) * 2);
+    var ringScore = Math.max(10, 100 - errorPenalty - timePenalty);
+    gameState.totalScore += ringScore;
+
+    gameState.currentRing++;
+
+    if (gameState.currentRing >= GAME_RING_COUNT) {
+      // All rings collected — game complete
+      gameState.finished = true;
+      gameState.endTime = sim.time;
+      showGameResults();
+    } else {
+      // Set next ring as target
+      var nextDepth = gameState.rings[gameState.currentRing].depth;
+      sim.targetDepth = nextDepth;
+      document.getElementById("target-slider").value = nextDepth;
+      document.getElementById("slider-val").textContent = nextDepth.toFixed(2) + " m";
+      settleChangeTime = sim.time; settled = false; settleTime = null;
+    }
+  }
+}
+
+function showGameResults() {
+  var totalTime = (gameState.endTime - gameState.startTime).toFixed(1);
+  var container = document.getElementById("game-container");
+
+  // Remove existing overlay if any
+  var existing = document.getElementById("game-overlay");
+  if (existing) existing.remove();
+
+  var overlay = document.createElement("div");
+  overlay.id = "game-overlay";
+
+  var html = '<div class="overlay-box">';
+  html += '<h2>\uD83C\uDFC6 Challenge Complete!</h2>';
+  html += '<div class="final-score">' + gameState.totalScore + ' pts</div>';
+  html += '<div class="stat"><span class="label">Total Time</span> ' + totalTime + ' s</div>';
+  for (var i = 0; i < gameState.rings.length; i++) {
+    var r = gameState.rings[i];
+    var errMm = (r.error * 1000).toFixed(1);
+    html += '<div class="stat"><span class="label">Ring ' + (i + 1) + '</span> ' +
+      (r.depth * 1000).toFixed(0) + ' mm (error: ' + errMm + ' mm)</div>';
+  }
+  html += '<button id="btn-game-retry">\uD83D\uDD04 Play Again</button>';
+  html += ' <button id="btn-game-quit">Exit</button>';
+  html += '</div>';
+  overlay.innerHTML = html;
+  container.appendChild(overlay);
+
+  pause();
+
+  document.getElementById("btn-game-retry").addEventListener("click", function() { startGame(); });
+  document.getElementById("btn-game-quit").addEventListener("click", function() { stopGame(); resetSim(); play(); });
+}
+
+function drawGameRings(t) {
+  if (!gameState.active) return;
+  for (var i = 0; i < gameState.rings.length; i++) {
+    var ring = gameState.rings[i];
+    var y = depthToY(ring.depth);
+    var isCurrent = (i === gameState.currentRing && !gameState.finished);
+    var isCollected = ring.collected;
+
+    if (isCollected) {
+      // Collected ring — faded green checkmark
+      ctx.save();
+      ctx.globalAlpha = 0.35;
+      ctx.strokeStyle = "#a6e3a1";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(60, y);
+      ctx.lineTo(W - 20, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      // Checkmark icon
+      ctx.fillStyle = "#a6e3a1";
+      ctx.font = "bold 14px sans-serif";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText("\u2713 " + (ring.depth * 1000).toFixed(0) + " mm", 62, y - 12);
+      ctx.restore();
+    } else if (isCurrent) {
+      // Current target ring — animated, prominent
+      var pulse = 0.6 + Math.sin(t * 4) * 0.2;
+
+      // Ring zone (tolerance band)
+      ctx.save();
+      ctx.globalAlpha = 0.12 + Math.sin(t * 3) * 0.04;
+      ctx.fillStyle = "#cba6f7";
+      var bandTop = depthToY(ring.depth - GAME_RING_TOLERANCE);
+      var bandBot = depthToY(ring.depth + GAME_RING_TOLERANCE);
+      ctx.fillRect(55, bandTop, W - 70, bandBot - bandTop);
+      ctx.restore();
+
+      // Center line
+      ctx.save();
+      ctx.globalAlpha = pulse;
+      ctx.strokeStyle = "#cba6f7";
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([10, 5]);
+      ctx.beginPath();
+      ctx.moveTo(55, y);
+      ctx.lineTo(W - 15, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      // Ring markers (left + right)
+      ctx.fillStyle = "#cba6f7";
+      // Left diamond
+      ctx.beginPath();
+      ctx.moveTo(55, y - 8);
+      ctx.lineTo(63, y);
+      ctx.lineTo(55, y + 8);
+      ctx.closePath();
+      ctx.fill();
+
+      // Label
+      ctx.font = "bold 12px 'Consolas','Courier New',monospace";
+      ctx.textAlign = "right";
+      ctx.textBaseline = "middle";
+      ctx.fillStyle = "#cba6f7";
+      ctx.fillText("RING " + (i + 1) + " \u2014 " + (ring.depth * 1000).toFixed(0) + " mm", W - 18, y - 12);
+      ctx.restore();
+    } else {
+      // Future ring — subtle indicator
+      ctx.save();
+      ctx.globalAlpha = 0.2;
+      ctx.strokeStyle = "#6c7086";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([3, 6]);
+      ctx.beginPath();
+      ctx.moveTo(60, y);
+      ctx.lineTo(W - 20, y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#6c7086";
+      ctx.font = "10px 'Consolas',monospace";
+      ctx.textAlign = "left";
+      ctx.textBaseline = "middle";
+      ctx.fillText((ring.depth * 1000).toFixed(0) + " mm", 62, y - 8);
+      ctx.restore();
+    }
+  }
+}
+
+// =========================================================================
 // UI Setup & Game Loop
 // =========================================================================
 var SIM_SPEED = 10, FPS = 30, DT = 0.001;
@@ -1106,8 +1366,11 @@ function renderFrame(t) {
   drawSeaFloor(animTime);
   drawParticlesAll();
 
-  // Target depth line
-  if (sim) drawTargetLine(sim.targetDepth, animTime);
+  // Game rings (behind target line and submarine)
+  drawGameRings(animTime);
+
+  // Target depth line (hidden during game mode — rings replace it)
+  if (sim && !gameState.active) drawTargetLine(sim.targetDepth, animTime);
 
   // Depth scale
   drawDepthScale();
@@ -1136,8 +1399,10 @@ function loop(timestamp) {
   if (!running) return;
   for (var i = 0; i < STEPS_PER_FRAME; i++) sim.step();
   record();
+  updateGameLogic();
   renderFrame(timestamp || performance.now());
   updateHUD();
+  updateGameHUD();
 
   // Graphs
   drawGraph(graphDepthCanvas, depthBuf, tBuf, "#89b4fa", "Depth History", sim.targetDepth, "rgba(243,139,168,0.6)", "target");
@@ -1172,9 +1437,15 @@ function resetSim() {
 // --- Event handlers ---
 document.getElementById("btn-play").addEventListener("click", play);
 document.getElementById("btn-pause").addEventListener("click", pause);
-document.getElementById("btn-reset").addEventListener("click", resetSim);
+document.getElementById("btn-reset").addEventListener("click", function() { if (gameState.active) stopGame(); resetSim(); });
+
+document.getElementById("btn-game").addEventListener("click", function() {
+  if (gameState.active) { stopGame(); resetSim(); play(); }
+  else startGame();
+});
 
 document.getElementById("target-slider").addEventListener("input", function(e) {
+  if (gameState.active) return; // Disable manual target changes during game
   var val = parseFloat(e.target.value);
   document.getElementById("slider-val").textContent = val.toFixed(2) + " m";
   if (sim) { sim.targetDepth = val; settleChangeTime = sim.time; settled = false; settleTime = null; }
@@ -1208,6 +1479,7 @@ document.getElementById("diameter-slider").addEventListener("input", function(e)
 
 // Click-to-set-target
 canvas.addEventListener("click", function(e) {
+  if (gameState.active) return; // Disable manual target changes during game
   var rect = canvas.getBoundingClientRect();
   var y = e.clientY - rect.top;
   if (y < skyH) return;

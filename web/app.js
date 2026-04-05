@@ -1290,6 +1290,7 @@ var fuelState = {
   prevPbsForFuel: 0,   // previous PBS value for delta tracking
   frozen: false,       // PBS frozen when fuel runs out
   frozenPbs: 0,        // PBS level when frozen
+  frozenTime: 0,       // sim.time when fuel ran out
   totalScore: 0,
   finished: false
 };
@@ -1318,7 +1319,8 @@ function startFuelGame() {
   fuelState.fuelUsed = 0;
   fuelState.prevPbsForFuel = sim.pbsMl;
   fuelState.frozen = false;
-  fuelState.frozenPbs = 0;
+  fuelState.frozenPbs = sim.pbsMl;
+  fuelState.frozenTime = 0;
   fuelState.totalScore = 0;
   fuelState.finished = false;
   fuelState.active = true;
@@ -1387,6 +1389,7 @@ function updateFuelLogic() {
   if (fuelRemaining <= 0 && !fuelState.frozen) {
     fuelState.frozen = true;
     fuelState.frozenPbs = sim.pbsMl;
+    fuelState.frozenTime = sim.time;
     fuelState.fuelUsed = fuelState.fuelBudget; // clamp
   }
 
@@ -1431,10 +1434,10 @@ function updateFuelLogic() {
     }
   }
 
-  // If fuel ran out and no waypoints can be reached, end after 10s grace period
+  // If fuel ran out and no waypoints can be reached, end after grace period
   if (fuelState.frozen && !fuelState.finished) {
-    var timeSinceFrozen = sim.time - fuelState.startTime;
-    // Check if submarine velocity is near zero (settled) for 5 seconds
+    var timeSinceFrozen = sim.time - fuelState.frozenTime;
+    // Check if submarine velocity is near zero (settled) after 5s grace period
     if (Math.abs(sim.velocity) < 0.001 && timeSinceFrozen > 5) {
       fuelState.finished = true;
       fuelState.endTime = sim.time;
